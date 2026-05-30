@@ -6,7 +6,7 @@ class DummyEvaluator:
     Evaluador dummy para pruebas.
 
     Devuelve:
-    - priors/logits aleatorios para las 55 acciones del problema.
+    - probabilidades aleatorias para las 55 acciones del problema.
     - value aleatorio en [-1, 1].
     """
 
@@ -19,12 +19,11 @@ class DummyEvaluator:
         self.rng = np.random.default_rng(random_seed)
 
     def predict(self, state: Any) -> tuple[np.ndarray, float]:
-        priors = self.rng.normal(
-            loc=0.0,
-            scale=1.0,
+        policy = self.rng.random(
             size=self.action_space_size,
         )
+        policy = policy / policy.sum()
 
         value = float(self.rng.uniform(-1.0, 1.0))
 
-        return priors, value
+        return policy, value

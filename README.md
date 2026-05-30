@@ -246,60 +246,30 @@ La primera versión debería permitir:
 10. Detectar condiciones terminales.
 11. Evaluar la calidad final de un cronograma.
 
-## Estructura sugerida del proyecto
+## Estructura actual del proyecto
 
 ```text
-project/
-│
+workforce_schedunling/
 ├── README.md
 ├── AGENTS.md
 ├── pyproject.toml
 ├── uv.lock
-├── .python-version
 ├── .gitignore
-│
-├── src/
-│   └── scheduling_ai/
-│       ├── __init__.py
-│       │
-│       ├── core/
-│       │   ├── __init__.py
-│       │   ├── engine.py
-│       │   ├── state.py
-│       │   ├── action.py
-│       │   └── config.py
-│       │
-│       ├── rules/
-│       │   ├── __init__.py
-│       │   └── legal_action_mask.py
-│       │
-│       ├── search/
-│       │   ├── __init__.py
-│       │   └── search.py
-│       │
-│       ├── evaluators/
-│       │   ├── __init__.py
-│       │   ├── base.py
-│       │   └── resnet.py
-│       │
-│       └── utils/
-│           ├── __init__.py
-│           └── validation.py
-│
+├── modules/
+│   ├── demand_simulator/
+│   ├── evaluators/
+│   │   ├── dummy/
+│   │   └── resnet/
+│   ├── mcts/
+│   ├── trajectory_generation/
+│   ├── utils/
+│   └── workforce_engine/
 ├── tests/
-│   ├── test_engine.py
-│   ├── test_state.py
-│   ├── test_action.py
-│   └── test_legal_action_mask.py
-│
-├── notebooks/
-│   └── exploration.ipynb
-│
-└── docs/
-    ├── problem_context.md
-    ├── architecture.md
-    └── decisions.md
+│   └── .gitkeep
+└── notebooks/
 ```
+
+La carpeta `notebooks/` contiene notebooks exploratorios pendientes de depuración y está excluida de Git. Los notebooks ubicados dentro de `modules/` se conservan versionados por ahora como ejemplos o material de referencia de cada módulo.
 
 ## Principios de diseño
 
@@ -345,23 +315,18 @@ Aunque PyTorch será parte del stack tecnológico del proyecto, la prioridad ini
 
 ## Instalación
 
-El proyecto utilizará `uv` para la gestión del entorno y las dependencias.
+El proyecto utiliza `uv` para gestionar entorno, dependencias y ejecución de comandos. La configuración ya está inicializada en `pyproject.toml` y bloqueada en `uv.lock`.
 
-### Crear el proyecto
-
-Si el proyecto todavía no fue inicializado:
-
-```bash
-uv init
-```
-
-### Crear el entorno virtual
+### Crear y sincronizar el entorno virtual
 
 ```bash
 uv venv
+uv sync
 ```
 
-### Activar el entorno
+Esto crea `.venv/` e instala las dependencias declaradas. La carpeta `.venv/` está excluida de Git.
+
+### Activar el entorno manualmente
 
 En Linux/macOS:
 
@@ -375,44 +340,6 @@ En Windows PowerShell:
 .venv\Scripts\Activate.ps1
 ```
 
-### Definir versión de Python
-
-Se recomienda usar una versión moderna y estable de Python, por ejemplo:
-
-```bash
-uv python pin 3.11
-```
-
-Esto genera el archivo:
-
-```text
-.python-version
-```
-
-### Instalar dependencias base
-
-```bash
-uv add numpy pandas pydantic pytest jupyter ipykernel
-```
-
-### Instalar PyTorch
-
-Para instalación estándar:
-
-```bash
-uv add torch torchvision torchaudio
-```
-
-Para usar aceleración GPU con CUDA, verificar previamente la versión compatible con el sistema y la GPU.
-
-### Sincronizar dependencias
-
-Cuando el proyecto ya tenga `pyproject.toml` y `uv.lock`:
-
-```bash
-uv sync
-```
-
 ### Ejecutar comandos dentro del entorno
 
 ```bash
@@ -424,8 +351,58 @@ uv run pytest
 ```
 
 ```bash
-uv run jupyter notebook
+uv run jupyter lab
 ```
+
+También puede iniciarse Jupyter sin activar el entorno:
+
+```bash
+uv run --with jupyter jupyter lab
+```
+
+### Dependencias principales
+
+Las dependencias base actuales son:
+
+- `numpy`
+- `pandas`
+- `pydantic`
+- `torch`
+- `zarr`
+- `matplotlib`
+- `jupyter`
+- `ipykernel`
+- `pytest` como dependencia de desarrollo
+
+### Validación de GPU
+
+El entorno fue validado desde una terminal normal con una GPU NVIDIA GeForce RTX 3060:
+
+```text
+CUDA: 13.0
+torch.cuda.is_available(): True
+GPU: NVIDIA GeForce RTX 3060
+```
+
+Comando de validación:
+
+```bash
+uv run python -c "import torch; print(torch.version.cuda); print(torch.cuda.is_available()); print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else None)"
+```
+
+Nota: Codex puede ejecutarse dentro de un sandbox sin acceso a `/dev/nvidia*`. En ese caso, `torch.cuda.is_available()` puede devolver `False` desde Codex aunque la GPU funcione correctamente en una terminal normal o en Jupyter.
+
+### Notebooks
+
+Los notebooks exploratorios de la raiz fueron movidos a `notebooks/` para depuración futura. Esa carpeta está excluida de Git.
+
+Para abrir Jupyter desde el proyecto:
+
+```bash
+uv run --with jupyter jupyter lab
+```
+
+Si se requiere un kernel específico para este proyecto, debe registrarse desde el `.venv` del proyecto.
 
 ## Tests
 

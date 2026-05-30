@@ -5,22 +5,23 @@ implementation. It only requires an engine-like object that implements:
 
 - action_space_size: int
 - step(state, action_id) -> StepResult-like object with next_state, is_terminal and reward
-- legal_mask(state, priors) -> np.ndarray
+- legal_mask(state, policy) -> np.ndarray
 - check_terminality(state) -> bool
 - compute_reward(state) -> float
 
 And an evaluator-like object that implements:
 
-- predict(state) -> tuple[priors, value]
+- predict(state) -> tuple[policy, value]
 """
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Protocol, Tuple
+from typing import Any, Dict, List, Optional, Protocol
 
 import numpy as np
 
 from .mcts_schemas import MCTSAction, MCTSConfig, MCTSMode, MCTSNode, MCTSResult
+from modules.evaluators.base import EvaluatorProtocol
 
 
 class StepResultProtocol(Protocol):
@@ -39,7 +40,7 @@ class EngineProtocol(Protocol):
     def step(self, state: Any, action_id: int) -> StepResultProtocol:
         """Apply one action and return a StepResult-like object."""
 
-    def legal_mask(self, state: Any, priors: np.ndarray) -> np.ndarray:
+    def legal_mask(self, state: Any, policy: np.ndarray) -> np.ndarray:
         """Mask illegal actions and return a normalized probability vector."""
 
     def check_terminality(self, state: Any) -> bool:
@@ -49,18 +50,11 @@ class EngineProtocol(Protocol):
         """Return terminal reward for a terminal state."""
 
 
-class EvaluatorProtocol(Protocol):
-    """Minimal evaluator interface required by MCTS."""
-
-    def predict(self, state: Any) -> Tuple[np.ndarray, float]:
-        """Return action priors/logits and scalar value estimate."""
-
-
 class MCTS:
     """Monte Carlo Tree Search.
 
     This class does not know domain rules. It delegates transitions and action
-    legality to the engine, and obtains priors/value from the evaluator.
+    legality to the engine, and obtains policy/value from the evaluator.
     """
 
     def __init__(
@@ -202,7 +196,7 @@ class MCTS:
         return node_id
 
     def expand_node(self, node_id: int) -> float:
-        """Expand a non-terminal node using evaluator priors/value."""
+        """Expand a non-terminal node using evaluator policy/value."""
 
         node = self.nodes[node_id]
         if node.is_terminal:
@@ -210,14 +204,14 @@ class MCTS:
                 raise ValueError("Terminal node has no terminal_reward")
             return node.terminal_reward
 
-        priors, value = self.evaluator.predict(node.state)
-        priors = np.asarray(priors, dtype=float)
-        if priors.shape != (self.engine.action_space_size,):
+        policy, value = self.evaluator.predict(node.state)
+        policy = np.asarray(policy, dtype=float)
+        if policy.shape != (self.engine.action_space_size,):
             raise ValueError(
-                f"Evaluator priors must have shape ({self.engine.action_space_size},)"
+                f"Evaluator policy must have shape ({self.engine.action_space_size},)"
             )
 
-        masked_probs = np.asarray(self.engine.legal_mask(node.state, priors), dtype=float)
+        masked_probs = np.asarray(self.engine.legal_mask(node.state, policy), dtype=float)
         if masked_probs.shape != (self.engine.action_space_size,):
             raise ValueError(
                 f"Masked probs must have shape ({self.engine.action_space_size},)"

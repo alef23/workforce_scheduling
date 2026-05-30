@@ -110,17 +110,21 @@ class WorkforceEngine:
 
     def legal_mask(self, state: WorkforceState, priors: np.ndarray) -> np.ndarray:
         """
-        Enmascara acciones ilegales y normaliza con softmax solo sobre acciones legales.
+        Enmascara acciones ilegales y renormaliza probabilidades legales.
 
-        priors debe ser un vector de logits/scores de tamaño ACTION_SPACE_SIZE.
+        priors debe ser un vector de probabilidades o scores no negativos de tamaño
+        ACTION_SPACE_SIZE.
         """
-        logits = np.asarray(priors, dtype=float)
+        probabilities = np.asarray(priors, dtype=float)
 
-        if logits.shape != (ACTION_SPACE_SIZE,):
+        if probabilities.shape != (ACTION_SPACE_SIZE,):
             raise ValueError(
                 f"priors debe tener shape ({ACTION_SPACE_SIZE},), "
-                f"pero tiene shape {logits.shape}."
+                f"pero tiene shape {probabilities.shape}."
             )
+
+        if np.any(probabilities < 0):
+            raise ValueError("priors no puede contener valores negativos.")
 
         legal = self.get_legal_actions(state)
 
@@ -128,7 +132,13 @@ class WorkforceEngine:
             raise ValueError("No existen acciones legales para el estado recibido.")
 
         output = np.zeros(ACTION_SPACE_SIZE, dtype=float)
-        output[legal] = self._softmax(logits[legal])
+        legal_mass = probabilities[legal].sum()
+
+        if legal_mass <= 0:
+            output[legal] = 1.0 / legal.sum()
+            return output
+
+        output[legal] = probabilities[legal] / legal_mass
         return output
 
     def get_legal_actions(self, state: WorkforceState) -> np.ndarray:
@@ -669,9 +679,3 @@ class WorkforceEngine:
             and state.assignment_week == 0
         )
         return no_resource_in_progress and self.check_terminality(state)
-
-    @staticmethod
-    def _softmax(logits: np.ndarray) -> np.ndarray:
-        shifted = logits - np.max(logits)
-        exp_values = np.exp(shifted)
-        return exp_values / exp_values.sum()
