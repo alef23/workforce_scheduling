@@ -24,5 +24,4 @@ from .scenario_generator import (
     ScenarioGenerationConfig,
     ScenarioGenerationResult,
     generate_one_scenario,
-    collect_trajectories_to_save,
 )

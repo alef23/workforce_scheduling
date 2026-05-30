@@ -1,0 +1,182 @@
+# Dataset Generation
+
+Orquestador para generar datasets de trayectorias resueltas.
+
+El modulo separa dos responsabilidades:
+
+- El `TrajectoryGenerationWorker` genera trayectorias.
+- El `TrajectoryDatasetOrchestrator` ejecuta jobs, coordina workers y guarda en `TrajectoryBuffer`.
+
+La primera implementacion disponible es `RawDemandTrajectoryWorker`.
+
+## Worker Protocol
+
+Todo worker debe cumplir:
+
+```python
+class TrajectoryGenerationWorker(Protocol):
+    worker_type: str
+
+    def run(self, job: GenerationJob) -> GenerationWorkerResult:
+        ...
+```
+
+Esto permite reutilizar el mismo orquestador para etapas futuras:
+
+- trayectorias crudas desde `DemandSimulator`
+- trayectorias derivadas ajustando stock para inducir `expansion_mode`
+- trayectorias iniciadas desde estados intermedios con MCTS
+
+## RawDemandTrajectoryWorker
+
+Secuencia por job:
+
+```text
+samplear ProblemSetup
+samplear stock inicial
+generar cobertura con DemandSimulator
+agregar ruido con DemandNoiseGenerator
+replay de acciones con WorkforceEngine
+devolver trayectoria resuelta
+```
+
+El proceso principal guarda las trayectorias en Zarr. Los workers no escriben en
+el store compartido.
+
+## StockAdjustmentTrajectoryWorker
+
+Genera una segunda etapa a partir de trayectorias raw.
+
+Por cada trayectoria fuente:
+
+1. carga `ProblemSetup`, demanda inicial, stock inicial y acciones originales;
+2. con probabilidad `p_stock`, samplea un stock reducido uniforme por modalidad;
+3. si no reduce stock, conserva el stock y las acciones originales;
+4. si reduce stock, reordena chunks de recursos para respetar legalidad y activar
+   `expansion_mode` cuando corresponda;
+5. replayea siempre con `WorkforceEngine`;
+6. devuelve siempre una trayectoria derivada.
+
+Ejemplo:
+
+```python
+from modules.dataset_generation import (
+    StockAdjustmentConfig,
+    StockAdjustmentTrajectoryWorker,
+    build_stock_adjustment_jobs,
+)
+
+worker = StockAdjustmentTrajectoryWorker(
+    source_buffer_path="datasets/raw/trajectories.zarr",
+    config=StockAdjustmentConfig(p_stock=0.2),
+)
+
+jobs = build_stock_adjustment_jobs(
+    source_trajectory_ids=["raw_000000", "raw_000001"],
+)
+```
+
+## Ejemplo
+
+```python
+from modules.dataset_generation import (
+    DatasetGenerationConfig,
+    NoiseGenerationConfig,
+    ProblemSetupSamplingConfig,
+    RawDemandTrajectoryWorker,
+    ResourceSamplingConfig,
+    TrajectoryDatasetOrchestrator,
+    build_generation_jobs,
+)
+
+worker = RawDemandTrajectoryWorker(
+    setup_config=ProblemSetupSamplingConfig(
+        allowed_entry_hours=[6, 12, 18],
+        closing_hour=22,
+        max_overcoverage_tolerance=0.1,
+    ),
+    resource_config=ResourceSamplingConfig(
+        mod_4_max=10,
+        mod_6_max=10,
+        mod_8_max=5,
+    ),
+    noise_config=NoiseGenerationConfig(k_max=0.8),
+)
+
+orchestrator = TrajectoryDatasetOrchestrator(
+    config=DatasetGenerationConfig(
+        output_path="data/raw_trajectories.zarr",
+        n_workers=4,
+        overwrite=True,
+        progress_interval=100,
+    ),
+    worker=worker,
+)
+
+jobs = build_generation_jobs(n_jobs=1000)
+report = orchestrator.run(jobs)
+```
+
+`report.saved_trajectories` indica cuantas trayectorias fueron persistidas.
+
+## Script Raw
+
+Para generar un buffer raw desde consola:
+
+```bash
+uv run python scripts/generate_raw_demand_dataset.py 1000 --workers 4 --overwrite
+```
+
+La documentacion operativa completa esta en:
+
+```text
+scripts/README.md
+```
+
+Por defecto crea esta estructura:
+
+```text
+datasets/
+├── raw/
+│   └── trajectories.zarr
+├── derived/
+│   ├── stock_adjusted/
+│   │   └── trajectories.zarr
+│   └── mcts/
+│       └── trajectories.zarr
+├── samples/
+│   └── samples.zarr
+└── reports/
+```
+
+Los buffers derivados quedan solo como estructura de carpetas; se llenaran en
+las etapas posteriores de stock-adjustment y MCTS.
+
+Si se necesita reproducibilidad, se puede pasar una seed fija:
+
+```python
+jobs = build_generation_jobs(n_jobs=1000, seed=123)
+```
+
+El reporte incluye estadisticas agregadas de:
+
+- `initial_demand_total`
+- `final_reward`
+- `final_value`
+- recursos totales por modalidad
+- `trajectory_id` guardados
+
+Durante la ejecucion, el orquestador imprime progreso en pantalla por defecto:
+
+```text
+[dataset_generation] jobs=100/1000 ok=100 failed=0 saved=100 rate=12.50 jobs/s
+```
+
+Se puede desactivar con:
+
+```python
+DatasetGenerationConfig(
+    output_path="data/raw_trajectories.zarr",
+    print_progress=False,
+)
+```

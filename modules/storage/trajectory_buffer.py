@@ -52,6 +52,7 @@ class TrajectoryBuffer:
         trajectory_id: str | None = None,
         action_space_size: int = 55,
         temporal_chunk_size: int = 128,
+        metadata: dict[str, Any] | None = None,
     ) -> str:
         if len(trajectory) == 0:
             raise ValueError("trajectory no puede estar vacía.")
@@ -82,6 +83,10 @@ class TrajectoryBuffer:
 
         for key, value in setup.items():
             group.attrs[f"problem_setup.{key}"] = self._none_to_attr(value)
+
+        if metadata is not None:
+            for key, value in metadata.items():
+                group.attrs[f"metadata.{key}"] = self._to_attr_value(value)
 
         return trajectory_id
 
@@ -363,3 +368,22 @@ class TrajectoryBuffer:
     @staticmethod
     def _restore_attr(value: Any) -> Any:
         return None if value == NONE_ATTR else value
+
+    @staticmethod
+    def _to_attr_value(value: Any) -> Any:
+        if value is None:
+            return NONE_ATTR
+        if isinstance(value, np.generic):
+            return value.item()
+        if isinstance(value, np.ndarray):
+            return value.tolist()
+        if isinstance(value, tuple):
+            return [TrajectoryBuffer._to_attr_value(item) for item in value]
+        if isinstance(value, list):
+            return [TrajectoryBuffer._to_attr_value(item) for item in value]
+        if isinstance(value, dict):
+            return {
+                str(key): TrajectoryBuffer._to_attr_value(item)
+                for key, item in value.items()
+            }
+        return value

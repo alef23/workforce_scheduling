@@ -86,6 +86,23 @@ for batch in sample_buffer.iter_batches(batch_size=256, shuffle=True, seed=123):
 
 `metadata["trajectory_id"]` y `metadata["step_index"]` existen solo para trazabilidad.
 
+`TrajectoryBuffer.save()` tambien acepta metadata opcional por trayectoria:
+
+```python
+trajectory_buffer.save(
+    trajectory=trajectory,
+    problem_setup=problem_setup,
+    trajectory_id="raw_000001",
+    metadata={
+        "stage": "raw",
+        "seed": 123,
+        "initial_stock": [10, 5, 3],
+    },
+)
+```
+
+La metadata se guarda en atributos Zarr bajo el prefijo `metadata.`.
+
 ## Contrato de X e Y
 
 `X` contiene estado y setup crudos:

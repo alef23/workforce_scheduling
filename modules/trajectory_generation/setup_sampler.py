@@ -17,7 +17,7 @@ class ProblemSetupSampler:
     - Si viene en None, se samplea aleatoriamente.
 
     Importante:
-    - scoring_k representa el k del problema/scoring.
+    - max_overcoverage_tolerance representa el k del problema/scoring.
     - Este valor se guarda en ProblemSetup.max_overcoverage_tolerance.
     - El kmax del ruido NO vive acá; se define en ScenarioGenerationConfig.noise_k_max.
     """
@@ -26,7 +26,7 @@ class ProblemSetupSampler:
     closing_hour: Optional[int] = 22
     mobile_days_off_count: Optional[int] = None
     fixed_day_off: Optional[int] = None
-    scoring_k: float = 0.15
+    max_overcoverage_tolerance: float = 0.1
 
     random_entry_hours_count: int = 3
     random_entry_hours_pool: tuple[int, ...] = tuple(range(0, 24))
@@ -46,7 +46,7 @@ class ProblemSetupSampler:
             fixed_day_off=fixed_day_off,
             allowed_entry_hours=allowed_entry_hours,
             closing_hour=closing_hour,
-            max_overcoverage_tolerance=float(self.scoring_k),
+            max_overcoverage_tolerance=float(self.max_overcoverage_tolerance),
         )
 
     def _sample_mobile_days_off_count(self) -> int:
