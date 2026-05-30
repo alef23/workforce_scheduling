@@ -1,0 +1,52 @@
+# Sistema operativo
+.DS_Store
+Thumbs.db
+
+# Editores
+.vscode/
+.idea/
+
+# Entornos
+.env
+.env.local
+
+# Logs
+*.log
+
+# Python
+__pycache__/
+**/__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Jupyter
+.ipynb_checkpoints/
+**/.ipynb_checkpoints/
+notebooks/
+
+# Node
+node_modules/
+dist/
+build/
+.next/
+.vite/
+
+# Archivos temporales
+tmp/
+temp/
+.cache/
+
+# Datos y salidas generadas
+datasets/
+datasets_*/
+*.zarr/
+
+# Logs de entrenamiento generados
+modules/evaluators/resnet/training_logs/
+
+# Checkpoints de modelos
+# Por ahora los checkpoints versionables, como *.pt, no se ignoran.
