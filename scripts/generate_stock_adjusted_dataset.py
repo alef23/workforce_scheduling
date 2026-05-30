@@ -74,6 +74,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Mezcla IDs fuente antes de aplicar --n-samples.",
     )
+    parser.add_argument(
+        "--skip-existing",
+        action="store_true",
+        help="Saltea raw IDs que ya tengan una trayectoria stock_<raw_id> en output.",
+    )
     return parser.parse_args()
 
 
@@ -108,6 +113,29 @@ def select_source_ids(
     return ids
 
 
+def list_existing_stock_trajectory_ids(output_path: str | Path) -> set[str]:
+    trajectories_dir = Path(output_path) / "trajectories"
+    if not trajectories_dir.exists():
+        return set()
+
+    return {
+        path.name
+        for path in trajectories_dir.iterdir()
+        if path.is_dir() and path.name.startswith("stock_")
+    }
+
+
+def filter_existing_source_ids(
+    source_ids: list[str],
+    existing_stock_ids: set[str],
+) -> list[str]:
+    return [
+        source_id
+        for source_id in source_ids
+        if f"stock_{source_id}" not in existing_stock_ids
+    ]
+
+
 def main() -> None:
     args = parse_args()
     paths = create_dataset_buffer_layout(args.output_root)
@@ -120,6 +148,19 @@ def main() -> None:
         shuffle=args.shuffle,
         seed=args.seed,
     )
+    selected_before_skip = len(selected_ids)
+
+    if args.skip_existing and not args.overwrite:
+        existing_stock_ids = list_existing_stock_trajectory_ids(paths.stock_trajectories)
+        selected_ids = filter_existing_source_ids(
+            source_ids=selected_ids,
+            existing_stock_ids=existing_stock_ids,
+        )
+    elif args.skip_existing and args.overwrite:
+        print(
+            "[dataset_generation] --skip-existing se ignora porque --overwrite recrea el buffer.",
+            flush=True,
+        )
 
     worker = StockAdjustmentTrajectoryWorker(
         source_buffer_path=source_path,
@@ -148,6 +189,9 @@ def main() -> None:
     print(f"[dataset_generation] p_stock={args.p_stock}", flush=True)
     print(f"[dataset_generation] source_trajectories={len(source_ids)}", flush=True)
     print(f"[dataset_generation] selected_trajectories={len(selected_ids)}", flush=True)
+    if args.skip_existing and not args.overwrite:
+        skipped = selected_before_skip - len(selected_ids)
+        print(f"[dataset_generation] skipped_existing={skipped}", flush=True)
 
     report = orchestrator.run(jobs)
 

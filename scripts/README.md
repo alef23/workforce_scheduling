@@ -151,3 +151,16 @@ uv run python scripts/generate_stock_adjusted_dataset.py \
   --shuffle \
   --overwrite
 ```
+
+Continuar por tandas sin repetir trayectorias ya generadas:
+
+```bash
+uv run python scripts/generate_stock_adjusted_dataset.py \
+  --n-samples 1000 \
+  --shuffle \
+  --skip-existing
+```
+
+`--skip-existing` busca IDs `stock_<raw_id>` ya guardados en el output y los
+saltea. Si se usa junto con `--overwrite`, se ignora porque `--overwrite` recrea
+el buffer.
