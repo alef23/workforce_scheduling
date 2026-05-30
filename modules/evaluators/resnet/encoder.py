@@ -21,7 +21,8 @@ class StateEncoder:
         - initial_demand_total: (B,) o escalar
         - remaining_stock: (B, 3) o (3,)
         - variables escalares: (B,) o escalar
-        - allowed_entry_hours: (B, 24), (24,) o lista de horas permitidas
+        - allowed_entry_hours: (B, 24), (24,), lista de horas permitidas
+          o lista por sample para batches
         - valores None provenientes de Zarr se representan como -1
     """
 
@@ -264,6 +265,9 @@ class StateEncoder:
                 device=self.device,
             )
 
+        if isinstance(value, (list, tuple)):
+            return self._allowed_entry_hours_from_sequence(value, batch_size)
+
         arr = np.asarray(value)
 
         if arr.ndim == 2:
@@ -307,6 +311,83 @@ class StateEncoder:
             return mask
 
         raise ValueError("Formato inválido para allowed_entry_hours.")
+
+    def _allowed_entry_hours_from_sequence(
+        self,
+        value: list[Any] | tuple[Any, ...],
+        batch_size: int,
+    ) -> torch.Tensor:
+        if self._is_mask_like(value):
+            tensor = self._to_tensor(np.asarray(value), dtype=self.dtype).unsqueeze(0)
+
+            if batch_size > 1:
+                tensor = tensor.repeat(batch_size, 1)
+
+            return tensor
+
+        if batch_size == 1 and self._is_hour_sequence(value):
+            return self._hours_to_mask([value])
+
+        if len(value) != batch_size:
+            raise ValueError(
+                "allowed_entry_hours debe tener un elemento por sample "
+                f"para batch_size={batch_size}."
+            )
+
+        return self._hours_to_mask(value)
+
+    def _hours_to_mask(
+        self,
+        values: list[Any] | tuple[Any, ...],
+    ) -> torch.Tensor:
+        mask = torch.zeros(
+            (len(values), 24),
+            dtype=self.dtype,
+            device=self.device,
+        )
+
+        for row, hours in enumerate(values):
+            if hours is None:
+                mask[row, :] = 1.0
+                continue
+
+            if not self._is_hour_sequence(hours):
+                raise ValueError(
+                    "Cada entrada de allowed_entry_hours debe ser None "
+                    "o una secuencia de horas."
+                )
+
+            for hour in hours:
+                hour_int = int(hour)
+                if hour_int < 0 or hour_int > 23:
+                    raise ValueError(
+                        "allowed_entry_hours solo acepta horas entre 0 y 23."
+                    )
+                mask[row, hour_int] = 1.0
+
+        return mask
+
+    @staticmethod
+    def _is_mask_like(value: Any) -> bool:
+        try:
+            arr = np.asarray(value)
+        except ValueError:
+            return False
+        return (
+            arr.ndim == 1
+            and arr.shape[0] == 24
+            and np.all(np.isin(arr, [0, 1, False, True]))
+        )
+
+    @staticmethod
+    def _is_hour_sequence(value: Any) -> bool:
+        if value is None or not isinstance(value, (list, tuple, np.ndarray)):
+            return False
+        try:
+            arr = np.asarray(value)
+        except ValueError:
+            return False
+        return arr.ndim == 1
 
     # ============================================================
     # Escritura de canales

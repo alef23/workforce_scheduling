@@ -1,0 +1,135 @@
+# Storage Buffers
+
+Buffers Zarr para persistir trayectorias y samples de entrenamiento.
+
+Este módulo separa dos responsabilidades:
+
+- `TrajectoryBuffer`: guarda y carga trayectorias completas e identificables.
+- `SampleBuffer`: guarda y carga samples aplanados en batches para entrenamiento.
+
+El encoding para redes neuronales no vive en este módulo. La conversión a tensores y one-hot/multi-hot es responsabilidad de `StateEncoder`.
+
+## TrajectoryBuffer
+
+Guarda trayectorias completas bajo:
+
+```text
+store.zarr/
+└── trajectories/
+    ├── 000000/
+    ├── 000001/
+    └── ...
+```
+
+Cada trayectoria conserva:
+
+- `trajectory_id`
+- `ProblemSetup` como metadata cruda
+- estados de cada paso
+- `policy`
+- `action_id`
+- `reward`
+
+Uso:
+
+```python
+from modules.storage import TrajectoryBuffer
+
+buffer = TrajectoryBuffer("dataset.zarr")
+
+trajectory_id = buffer.save(
+    trajectory=trajectory,
+    problem_setup=problem_setup,
+)
+
+record = buffer.load(trajectory_id)
+```
+
+`record.problem_setup["allowed_entry_hours"]` conserva el valor crudo, por ejemplo:
+
+```python
+[6, 14, 18]
+```
+
+## SampleBuffer
+
+Guarda samples aplanados bajo:
+
+```text
+store.zarr/
+└── samples/
+```
+
+Se construye desde un `TrajectoryBuffer`:
+
+```python
+from modules.storage import SampleBuffer, TrajectoryBuffer
+
+trajectory_buffer = TrajectoryBuffer("dataset.zarr")
+sample_buffer = SampleBuffer("dataset.zarr")
+
+sample_buffer.build_from_trajectory_buffer(
+    trajectory_buffer=trajectory_buffer,
+    overwrite=True,
+)
+```
+
+Itera batches:
+
+```python
+for batch in sample_buffer.iter_batches(batch_size=256, shuffle=True, seed=123):
+    actions = batch.actions
+    X = batch.X
+    Y = batch.Y
+    metadata = batch.metadata
+```
+
+`metadata["trajectory_id"]` y `metadata["step_index"]` existen solo para trazabilidad.
+
+## Contrato de X e Y
+
+`X` contiene estado y setup crudos:
+
+```python
+X = {
+    "residual_demand": ...,
+    "remaining_stock": ...,
+    "expansion_mode": ...,
+    "current_modality": ...,
+    "current_entry_hour": ...,
+    "assignment_week": ...,
+    "initial_demand_total": ...,
+    "mobile_days_off_count": ...,
+    "fixed_day_off": ...,
+    "allowed_entry_hours": ...,
+    "max_overcoverage_tolerance": ...,
+    "closing_hour": ...,
+}
+```
+
+`allowed_entry_hours` se devuelve como dato crudo por sample:
+
+```python
+[6, 14, 18]
+```
+
+Si todas las horas están permitidas, se devuelve:
+
+```python
+None
+```
+
+`Y` contiene targets:
+
+```python
+Y = {
+    "policy": ...,
+    "value": ...,
+}
+```
+
+`value` corresponde al reward final asignado a todos los estados de la trayectoria.
+
+## Nota sobre almacenamiento interno
+
+Para poder guardar batches de forma eficiente en Zarr, `SampleBuffer` almacena internamente `allowed_entry_hours` como máscara de 24 posiciones. Esa representación es un detalle de persistencia. Al cargar batches, el loader la convierte nuevamente al dato crudo para que el encoder sea el único responsable del encoding neuronal.

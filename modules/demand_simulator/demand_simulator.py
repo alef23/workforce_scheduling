@@ -6,7 +6,7 @@ from typing import Any, Optional
 
 import numpy as np
 
-from .schemas import ProblemSetup, WorkforceState
+from modules.workforce_engine.schemas import ProblemSetup, WorkforceState
 
 
 ACTION_SPACE_SIZE = 55
@@ -393,7 +393,7 @@ class DemandSimulator:
         final_coverage: np.ndarray,
         planned_steps: list[_PlannedStep],
     ) -> list[dict[str, Any]]:
-        initial_demand_total = float(final_coverage.sum())
+        initial_demand_total = int(final_coverage.sum())
         if initial_demand_total <= 0:
             raise ValueError("final_coverage must have positive total demand.")
 

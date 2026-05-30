@@ -83,6 +83,20 @@ El wrapper arma ese diccionario automáticamente desde:
 | `allowed_entry_hours` | Canales 21-44, multi-hot de horas permitidas. `None` equivale a todas las horas permitidas. |
 | `closing_hour` | Canales 45-68, one-hot de hora de cierre. `None` queda todo en cero. |
 
+`allowed_entry_hours` puede llegar crudo como lista simple para un sample:
+
+```python
+[6, 14, 18]
+```
+
+o como lista por sample para batches:
+
+```python
+[[6, 14, 18], None, [8, 16]]
+```
+
+La conversión a multi-hot ocurre dentro del encoder.
+
 ## Datos excluidos del encoder
 
 Hay dos campos del dominio que no se codifican explícitamente:
