@@ -255,6 +255,28 @@ Para desactivar estos logs:
 uv run python scripts/generate_mcts_samples.py --disable-report-logging ...
 ```
 
+Dashboard HTML:
+
+`build_training_dashboard.py` construye un visor estatico desde los logs JSONL,
+checkpoints y buffers Zarr existentes. No modifica los modulos ni escribe en los
+buffers.
+
+```bash
+uv run python scripts/build_training_dashboard.py
+```
+
+Por defecto genera:
+
+```text
+datasets/reports/training_dashboard.html
+```
+
+Mientras corre el entrenamiento se puede refrescar cada 30 segundos:
+
+```bash
+watch -n 30 'uv run python scripts/build_training_dashboard.py'
+```
+
 Salida por defecto:
 
 ```text

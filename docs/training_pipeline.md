@@ -526,6 +526,35 @@ Flags utiles:
 --disable-report-logging  desactiva logs persistentes
 ```
 
+### Visor de entrenamiento
+
+El entrenamiento deja suficientes datos para generar un visor HTML sin tocar el
+pipeline: logs JSONL, checkpoints, `TrajectoryBuffer` raw/stock y
+`SampleBuffer`.
+
+Para construir o refrescar el visor:
+
+```bash
+uv run python scripts/build_training_dashboard.py
+```
+
+Salida por defecto:
+
+```text
+datasets/reports/training_dashboard.html
+```
+
+Durante una corrida larga se puede regenerar periodicamente y refrescar el
+navegador:
+
+```bash
+watch -n 30 'uv run python scripts/build_training_dashboard.py'
+```
+
+El visor muestra corridas, ciclos, losses del learner, checkpoints, conteos de
+MCTS vs reweighted, resumen de buffers Zarr y un preview de trayectorias y
+samples. Es una foto del estado actual; no escribe ni modifica buffers.
+
 ### Paso 6. Escalar la corrida
 
 Cuando la prueba chica sea estable:
