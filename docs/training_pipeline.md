@@ -77,10 +77,12 @@ Genera una trayectoria inicial:
 
 Parte de una trayectoria raw:
 
-- con probabilidad `p_stock` reduce stock por modalidad;
-- reordena chunks de acciones para mantener legalidad;
-- busca inducir `expansion_mode` cuando se agota el stock;
-- replayea siempre con `WorkforceEngine`;
+- con probabilidad `p_stock` activa una derivacion con stock reducido;
+- si no reduce stock, copia la trayectoria raw directamente;
+- si reduce stock, corta aleatoriamente el listado de chunks en orden original;
+- define el stock inicial contando chunks por modalidad antes del corte;
+- replayea con `WorkforceEngine` para recalcular estados y activar
+  `expansion_mode`;
 - guarda una trayectoria `stock_<raw_id>`.
 
 `MCTSGenerationWorker`
@@ -303,8 +305,9 @@ find datasets/raw/trajectories.zarr/trajectories \
 ### Paso 2. Generar trayectorias stock_adjusted y muestras con expansion_mode
 
 Este paso toma las trayectorias raw y genera una version derivada. Con
-probabilidad `p_stock` reduce stock y reordena acciones para inducir estados de
-`expansion_mode`.
+probabilidad `p_stock` reduce stock a partir de un corte aleatorio del listado de
+chunks de recursos. No mezcla chunks: conserva el orden original y replayea con
+`WorkforceEngine` para recalcular `remaining_stock` y `expansion_mode`.
 
 Comando recomendado:
 
@@ -326,12 +329,13 @@ datasets/derived/stock_adjusted/trajectories.zarr
 Que genera:
 
 - una trayectoria `stock_<raw_id>` por raw procesada;
-- replay con `WorkforceEngine`, siempre terminal;
+- copia directa de la raw cuando no reduce stock;
+- replay con `WorkforceEngine` cuando reduce stock;
 - estados con el mismo formato del `TrajectoryBuffer`;
 - `expansion_mode=True` en estados donde ya no queda stock y el engine opera en
   modo expansion;
-- metadata `stock_was_reduced`, `output_stock`, `has_expansion_mode`,
-  `first_expansion_step` y `source_trajectory_id`.
+- metadata `stock_was_reduced`, `stock_cut_index`, `output_stock`,
+  `has_expansion_mode`, `first_expansion_step` y `source_trajectory_id`.
 
 Procesar por tandas sin repetir:
 

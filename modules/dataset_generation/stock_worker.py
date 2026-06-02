@@ -12,7 +12,6 @@ from modules.storage import TrajectoryBuffer
 from modules.trajectory_generation import (
     extract_actions_from_trajectory,
     flatten_action_chunks,
-    reorder_chunks_for_expansion_mode,
     replay_actions_as_trajectory,
     split_actions_into_resource_chunks,
 )
@@ -25,14 +24,10 @@ from .schemas import GeneratedTrajectory, GenerationJob, GenerationWorkerResult
 @dataclass(frozen=True)
 class StockAdjustmentConfig:
     p_stock: float = 0.2
-    require_actual_reduction: bool = True
-    max_reduction_attempts: int = 20
 
     def __post_init__(self) -> None:
         if not 0 <= self.p_stock <= 1:
             raise ValueError("p_stock debe estar entre 0 y 1.")
-        if self.max_reduction_attempts <= 0:
-            raise ValueError("max_reduction_attempts debe ser positivo.")
 
 
 @dataclass
@@ -51,29 +46,73 @@ class StockAdjustmentTrajectoryWorker:
         record = source_buffer.load(source_trajectory_id)
 
         problem_setup = ProblemSetup(**record.problem_setup)
-        engine = WorkforceEngine(problem_setup)
-
         original_trajectory = self._samples_to_trajectory(record.samples)
         original_actions = extract_actions_from_trajectory(original_trajectory)
         original_stock = self._initial_stock(record.samples)
         initial_demand = self._initial_demand(record.samples)
+        output_trajectory_id = f"{self.trajectory_id_prefix}_{source_trajectory_id}"
 
-        stock_was_reduced = rng.random() < float(self.config.p_stock)
-        if stock_was_reduced:
-            output_stock = self._sample_reduced_stock(
-                original_stock=original_stock,
-                rng=rng,
+        should_reduce_stock = rng.random() < float(self.config.p_stock)
+        if not should_reduce_stock:
+            has_expansion_mode, first_expansion_step = self._expansion_metadata(
+                original_trajectory
             )
-        else:
-            output_stock = list(original_stock)
+            metadata = self._build_metadata(
+                job=job,
+                source_trajectory_id=source_trajectory_id,
+                stock_was_reduced=False,
+                original_stock=original_stock,
+                output_stock=list(original_stock),
+                has_expansion_mode=has_expansion_mode,
+                first_expansion_step=first_expansion_step,
+                initial_demand_total=int(initial_demand.sum()),
+                final_reward=float(record.final_reward),
+                trajectory_length=len(original_trajectory),
+                source_trajectory_length=len(record.samples),
+                stock_cut_index=None,
+            )
+            return self._build_result(
+                job=job,
+                problem_setup=problem_setup,
+                trajectory=original_trajectory,
+                trajectory_id=output_trajectory_id,
+                metadata=metadata,
+            )
 
-        output_actions = self._actions_for_stock(
-            actions=original_actions,
-            output_stock=output_stock,
-            stock_was_reduced=stock_was_reduced,
+        chunks = split_actions_into_resource_chunks(original_actions)
+        cut_index = self._sample_stock_cut_index(
+            chunks=chunks,
             rng=rng,
         )
+        if cut_index is None:
+            has_expansion_mode, first_expansion_step = self._expansion_metadata(
+                original_trajectory
+            )
+            metadata = self._build_metadata(
+                job=job,
+                source_trajectory_id=source_trajectory_id,
+                stock_was_reduced=False,
+                original_stock=original_stock,
+                output_stock=list(original_stock),
+                has_expansion_mode=has_expansion_mode,
+                first_expansion_step=first_expansion_step,
+                initial_demand_total=int(initial_demand.sum()),
+                final_reward=float(record.final_reward),
+                trajectory_length=len(original_trajectory),
+                source_trajectory_length=len(record.samples),
+                stock_cut_index=None,
+            )
+            return self._build_result(
+                job=job,
+                problem_setup=problem_setup,
+                trajectory=original_trajectory,
+                trajectory_id=output_trajectory_id,
+                metadata=metadata,
+            )
 
+        output_stock = self._stock_from_pre_expansion_chunks(chunks[:cut_index])
+        output_actions = flatten_action_chunks(chunks)
+        engine = WorkforceEngine(problem_setup)
         replayed = replay_actions_as_trajectory(
             initial_demand=initial_demand,
             initial_stock=output_stock,
@@ -85,26 +124,37 @@ class StockAdjustmentTrajectoryWorker:
         trajectory = replayed["trajectory"]
         has_expansion_mode, first_expansion_step = self._expansion_metadata(trajectory)
 
-        output_trajectory_id = f"{self.trajectory_id_prefix}_{source_trajectory_id}"
-        metadata = {
-            "stage": "stock_adjusted",
-            "worker_type": self.worker_type,
-            "job_id": job.job_id,
-            "seed": int(job.seed),
-            "source_trajectory_id": source_trajectory_id,
-            "stock_was_reduced": bool(stock_was_reduced),
-            "p_stock": float(self.config.p_stock),
-            "original_stock": original_stock,
-            "output_stock": output_stock,
-            "has_expansion_mode": bool(has_expansion_mode),
-            "first_expansion_step": first_expansion_step,
-            "initial_demand_total": int(initial_demand.sum()),
-            "final_reward": float(replayed["final_reward"]),
-            "final_value": float(replayed["final_reward"]),
-            "trajectory_length": int(len(trajectory)),
-            "source_trajectory_length": int(len(record.samples)),
-        }
+        metadata = self._build_metadata(
+            job=job,
+            source_trajectory_id=source_trajectory_id,
+            stock_was_reduced=True,
+            original_stock=original_stock,
+            output_stock=output_stock,
+            has_expansion_mode=has_expansion_mode,
+            first_expansion_step=first_expansion_step,
+            initial_demand_total=int(initial_demand.sum()),
+            final_reward=float(replayed["final_reward"]),
+            trajectory_length=len(trajectory),
+            source_trajectory_length=len(record.samples),
+            stock_cut_index=cut_index,
+        )
 
+        return self._build_result(
+            job=job,
+            problem_setup=problem_setup,
+            trajectory=trajectory,
+            trajectory_id=output_trajectory_id,
+            metadata=metadata,
+        )
+
+    def _build_result(
+        self,
+        job: GenerationJob,
+        problem_setup: ProblemSetup,
+        trajectory: list[dict[str, Any]],
+        trajectory_id: str,
+        metadata: dict[str, Any],
+    ) -> GenerationWorkerResult:
         return GenerationWorkerResult(
             job_id=job.job_id,
             worker_type=self.worker_type,
@@ -112,7 +162,7 @@ class StockAdjustmentTrajectoryWorker:
                 GeneratedTrajectory(
                     trajectory=trajectory,
                     problem_setup=problem_setup,
-                    trajectory_id=output_trajectory_id,
+                    trajectory_id=trajectory_id,
                     metadata=metadata,
                 )
             ],
@@ -145,57 +195,21 @@ class StockAdjustmentTrajectoryWorker:
             dtype=int,
         )
 
-    def _sample_reduced_stock(
-        self,
-        original_stock: list[int],
+    @staticmethod
+    def _sample_stock_cut_index(
+        chunks: list[list[int]],
         rng: random.Random,
-    ) -> list[int]:
-        for _ in range(int(self.config.max_reduction_attempts)):
-            reduced = [
-                rng.randint(0, int(original_stock[0])),
-                rng.randint(0, int(original_stock[1])),
-                rng.randint(0, int(original_stock[2])),
-            ]
-            if not self.config.require_actual_reduction or reduced != original_stock:
-                return [int(value) for value in reduced]
-
-        return self._force_reduction(original_stock=original_stock, rng=rng)
+    ) -> int | None:
+        if len(chunks) < 2:
+            return None
+        return rng.randint(1, len(chunks) - 1)
 
     @staticmethod
-    def _force_reduction(
-        original_stock: list[int],
-        rng: random.Random,
-    ) -> list[int]:
-        reducible_indices = [
-            index
-            for index, value in enumerate(original_stock)
-            if int(value) > 0
-        ]
-        if not reducible_indices:
-            return [int(value) for value in original_stock]
-
-        reduced = [int(value) for value in original_stock]
-        index = rng.choice(reducible_indices)
-        reduced[index] = rng.randint(0, reduced[index] - 1)
-        return reduced
-
-    @staticmethod
-    def _actions_for_stock(
-        actions: list[int],
-        output_stock: list[int],
-        stock_was_reduced: bool,
-        rng: random.Random,
-    ) -> list[int]:
-        if not stock_was_reduced:
-            return [int(action) for action in actions]
-
-        chunks = split_actions_into_resource_chunks(actions)
-        ordered_chunks = reorder_chunks_for_expansion_mode(
-            resources_chunks=chunks,
-            initial_stock=output_stock,
-            rng=rng,
-        )
-        return flatten_action_chunks(ordered_chunks)
+    def _stock_from_pre_expansion_chunks(chunks: list[list[int]]) -> list[int]:
+        stock = [0, 0, 0]
+        for chunk in chunks:
+            stock[int(chunk[0])] += 1
+        return stock
 
     @staticmethod
     def _expansion_metadata(
@@ -203,9 +217,48 @@ class StockAdjustmentTrajectoryWorker:
     ) -> tuple[bool, int | None]:
         for step_index, sample in enumerate(trajectory):
             state = sample["state"]
-            if bool(getattr(state, "expansion_mode", False)):
+            if isinstance(state, dict):
+                expansion_mode = state.get("expansion_mode", False)
+            else:
+                expansion_mode = getattr(state, "expansion_mode", False)
+            if bool(expansion_mode):
                 return True, int(step_index)
         return False, None
+
+    def _build_metadata(
+        self,
+        job: GenerationJob,
+        source_trajectory_id: str,
+        stock_was_reduced: bool,
+        original_stock: list[int],
+        output_stock: list[int],
+        has_expansion_mode: bool,
+        first_expansion_step: int | None,
+        initial_demand_total: int,
+        final_reward: float,
+        trajectory_length: int,
+        source_trajectory_length: int,
+        stock_cut_index: int | None,
+    ) -> dict[str, Any]:
+        return {
+            "stage": "stock_adjusted",
+            "worker_type": self.worker_type,
+            "job_id": job.job_id,
+            "seed": int(job.seed),
+            "source_trajectory_id": source_trajectory_id,
+            "stock_was_reduced": bool(stock_was_reduced),
+            "p_stock": float(self.config.p_stock),
+            "original_stock": [int(value) for value in original_stock],
+            "output_stock": [int(value) for value in output_stock],
+            "stock_cut_index": stock_cut_index,
+            "has_expansion_mode": bool(has_expansion_mode),
+            "first_expansion_step": first_expansion_step,
+            "initial_demand_total": int(initial_demand_total),
+            "final_reward": float(final_reward),
+            "final_value": float(final_reward),
+            "trajectory_length": int(trajectory_length),
+            "source_trajectory_length": int(source_trajectory_length),
+        }
 
 
 def build_stock_adjustment_jobs(

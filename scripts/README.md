@@ -123,9 +123,12 @@ Genera la segunda etapa del dataset desde el buffer raw.
 
 Por cada trayectoria raw:
 
-- con probabilidad `p_stock`, reduce stock por modalidad;
-- si no reduce stock, conserva la trayectoria como equivalente replayeado;
-- replayea siempre con `WorkforceEngine`;
+- con probabilidad `p_stock`, corta la secuencia de chunks de recursos y reduce
+  stock para inducir `expansion_mode`;
+- si no reduce stock, copia la trayectoria raw directamente al nuevo buffer;
+- si reduce stock, conserva el orden original de chunks y replayea con
+  `WorkforceEngine` para recalcular estados, `remaining_stock` y
+  `expansion_mode`;
 - guarda siempre una trayectoria derivada.
 
 Comando minimo:

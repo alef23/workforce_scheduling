@@ -231,10 +231,18 @@ def _add_resource_totals(
     resource_totals: dict[str, int],
     metadata: dict,
 ) -> None:
-    initial_stock = metadata.get("initial_stock")
-    if initial_stock is None:
+    stock = _resource_totals_stock(metadata)
+    if stock is None:
         return
 
-    resource_totals["mod_4"] += int(initial_stock[0])
-    resource_totals["mod_6"] += int(initial_stock[1])
-    resource_totals["mod_8"] += int(initial_stock[2])
+    resource_totals["mod_4"] += int(stock[0])
+    resource_totals["mod_6"] += int(stock[1])
+    resource_totals["mod_8"] += int(stock[2])
+
+
+def _resource_totals_stock(metadata: dict):
+    if "initial_stock" in metadata:
+        return metadata["initial_stock"]
+    if "output_stock" in metadata:
+        return metadata["output_stock"]
+    return None

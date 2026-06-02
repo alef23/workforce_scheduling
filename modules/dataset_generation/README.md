@@ -50,12 +50,15 @@ Genera una segunda etapa a partir de trayectorias raw.
 Por cada trayectoria fuente:
 
 1. carga `ProblemSetup`, demanda inicial, stock inicial y acciones originales;
-2. con probabilidad `p_stock`, samplea un stock reducido uniforme por modalidad;
-3. si no reduce stock, conserva el stock y las acciones originales;
-4. si reduce stock, reordena chunks de recursos para respetar legalidad y activar
-   `expansion_mode` cuando corresponda;
-5. replayea siempre con `WorkforceEngine`;
-6. devuelve siempre una trayectoria derivada.
+2. con probabilidad `p_stock`, activa la derivacion con stock reducido;
+3. si no reduce stock, copia la trayectoria raw directamente;
+4. si reduce stock, corta aleatoriamente el listado ordenado de chunks de
+   recursos;
+5. define el stock inicial como la cantidad de chunks por modalidad antes del
+   corte;
+6. conserva el orden original de chunks y replayea con `WorkforceEngine` para
+   recalcular estados y activar `expansion_mode`;
+7. devuelve siempre una trayectoria derivada.
 
 Ejemplo:
 
