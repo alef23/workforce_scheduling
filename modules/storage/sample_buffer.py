@@ -10,7 +10,10 @@ import zarr
 from .trajectory_buffer import TrajectoryBuffer
 
 
-SCHEMA_VERSION = "1.0"
+SCHEMA_VERSION = "1.1"
+DEFAULT_POLICY_WEIGHT = 1.0
+DEFAULT_SAMPLE_SOURCE = "unknown"
+DEFAULT_MODEL_VERSION = -1
 
 
 @dataclass(frozen=True)
@@ -167,6 +170,15 @@ class SampleBuffer:
                 g["value"][read_idx].astype(np.float32),
                 restore_order,
             ),
+            "policy_weight": self._restore_order(
+                self._read_or_default(
+                    name="policy_weight",
+                    read_idx=read_idx,
+                    dtype=np.float32,
+                    default_value=DEFAULT_POLICY_WEIGHT,
+                ),
+                restore_order,
+            ),
         }
 
         metadata = {
@@ -178,6 +190,33 @@ class SampleBuffer:
                 g["step_index"][read_idx].astype(np.int32),
                 restore_order,
             ),
+            "sample_source": self._restore_order(
+                self._read_or_default(
+                    name="sample_source",
+                    read_idx=read_idx,
+                    dtype=str,
+                    default_value=DEFAULT_SAMPLE_SOURCE,
+                ),
+                restore_order,
+            ),
+            "source_trajectory_id": self._restore_order(
+                self._read_or_default(
+                    name="source_trajectory_id",
+                    read_idx=read_idx,
+                    dtype=str,
+                    default_value="",
+                ),
+                restore_order,
+            ),
+            "model_version": self._restore_order(
+                self._read_or_default(
+                    name="model_version",
+                    read_idx=read_idx,
+                    dtype=np.int32,
+                    default_value=DEFAULT_MODEL_VERSION,
+                ),
+                restore_order,
+            ),
             "sample_index": idx.astype(np.int64),
         }
 
@@ -187,6 +226,80 @@ class SampleBuffer:
             Y=Y,
             metadata=metadata,
         )
+
+    def append_trajectories(self, trajectories: list[Any]) -> int:
+        """
+        Aplana trayectorias finalizadas y las agrega al buffer.
+
+        Cada item debe exponer atributos o claves compatibles con:
+        - trajectory
+        - problem_setup
+        - trajectory_id
+        - metadata
+        """
+        samples = []
+        for trajectory_record in trajectories:
+            trajectory = self._get_value(trajectory_record, "trajectory")
+            problem_setup = self._get_value(trajectory_record, "problem_setup")
+            trajectory_id = self._get_value(
+                trajectory_record,
+                "trajectory_id",
+                default="",
+            )
+            metadata = self._get_value(
+                trajectory_record,
+                "metadata",
+                default={},
+            )
+
+            for step_index, sample in enumerate(trajectory):
+                sample_metadata = dict(metadata)
+                sample_metadata.update(sample.get("metadata", {}))
+                samples.append(
+                    {
+                        "trajectory_id": trajectory_id,
+                        "step_index": int(sample.get("step_index", step_index)),
+                        "state": sample["state"],
+                        "problem_setup": problem_setup,
+                        "policy": sample["policy"],
+                        "action_id": sample["action_id"],
+                        "value": sample.get("value", sample.get("reward")),
+                        "policy_weight": sample.get(
+                            "policy_weight",
+                            sample_metadata.get(
+                                "policy_weight",
+                                DEFAULT_POLICY_WEIGHT,
+                            ),
+                        ),
+                        "metadata": sample_metadata,
+                    }
+                )
+
+        return self.append_samples(samples)
+
+    def append_samples(self, samples: list[dict[str, Any]]) -> int:
+        """
+        Agrega samples aplanados al final del buffer.
+
+        Retorna la cantidad de samples agregados.
+        """
+        if not samples:
+            return 0
+
+        arrays = self._samples_to_arrays(samples)
+        self._ensure_appendable_arrays(arrays)
+
+        start = len(self)
+        end = start + int(arrays["action_id"].shape[0])
+
+        for name, data in arrays.items():
+            array = self.samples_group[name]
+            array.resize((end,) + array.shape[1:])
+            array[start:end] = data
+
+        self.samples_group.attrs["length"] = int(end)
+        self.samples_group.attrs["schema_version"] = SCHEMA_VERSION
+        return int(arrays["action_id"].shape[0])
 
     @classmethod
     def _records_to_arrays(cls, records) -> dict[str, np.ndarray]:
@@ -204,9 +317,28 @@ class SampleBuffer:
                         "policy": sample["policy"],
                         "action_id": sample["action_id"],
                         "value": sample["reward"],
+                        "policy_weight": sample.get(
+                            "policy_weight",
+                            DEFAULT_POLICY_WEIGHT,
+                        ),
+                        "metadata": {
+                            "sample_source": sample.get(
+                                "sample_source",
+                                "trajectory_buffer",
+                            ),
+                            "source_trajectory_id": record.trajectory_id,
+                            "model_version": sample.get(
+                                "model_version",
+                                DEFAULT_MODEL_VERSION,
+                            ),
+                        },
                     }
                 )
 
+        return cls._samples_to_arrays(samples)
+
+    @classmethod
+    def _samples_to_arrays(cls, samples: list[dict[str, Any]]) -> dict[str, np.ndarray]:
         n = len(samples)
         arrays = {
             "trajectory_id": np.empty((n,), dtype="U32"),
@@ -226,45 +358,128 @@ class SampleBuffer:
             "policy": np.zeros((n, 55), dtype=np.float32),
             "action_id": np.zeros((n,), dtype=np.int32),
             "value": np.zeros((n,), dtype=np.float32),
+            "policy_weight": np.ones((n,), dtype=np.float32),
+            "sample_source": np.empty((n,), dtype="U64"),
+            "source_trajectory_id": np.empty((n,), dtype="U64"),
+            "model_version": np.full(
+                (n,),
+                DEFAULT_MODEL_VERSION,
+                dtype=np.int32,
+            ),
         }
 
         for i, sample in enumerate(samples):
             state = sample["state"]
             setup = sample["problem_setup"]
+            metadata = sample.get("metadata", {})
 
             arrays["trajectory_id"][i] = sample["trajectory_id"]
             arrays["step_index"][i] = int(sample["step_index"])
             arrays["residual_demand"][i] = np.asarray(
-                state["residual_demand"],
+                cls._get_state_value(state, "residual_demand"),
                 dtype=np.int32,
             )
             arrays["remaining_stock"][i] = np.asarray(
-                state["remaining_stock"],
+                cls._get_state_value(state, "remaining_stock"),
                 dtype=np.int32,
             )
-            arrays["expansion_mode"][i] = bool(state["expansion_mode"])
+            arrays["expansion_mode"][i] = bool(
+                cls._get_state_value(state, "expansion_mode")
+            )
             arrays["current_modality"][i] = cls._none_to_minus_one(
-                state["current_modality"]
+                cls._get_state_value(state, "current_modality")
             )
             arrays["current_entry_hour"][i] = cls._none_to_minus_one(
-                state["current_entry_hour"]
+                cls._get_state_value(state, "current_entry_hour")
             )
-            arrays["assignment_week"][i] = int(state["assignment_week"])
-            arrays["initial_demand_total"][i] = int(state["initial_demand_total"])
-            arrays["mobile_days_off_count"][i] = int(setup["mobile_days_off_count"])
-            arrays["fixed_day_off"][i] = cls._none_to_minus_one(setup["fixed_day_off"])
+            arrays["assignment_week"][i] = int(
+                cls._get_state_value(state, "assignment_week")
+            )
+            arrays["initial_demand_total"][i] = int(
+                cls._get_state_value(state, "initial_demand_total")
+            )
+            arrays["mobile_days_off_count"][i] = int(
+                cls._get_setup_value(setup, "mobile_days_off_count")
+            )
+            arrays["fixed_day_off"][i] = cls._none_to_minus_one(
+                cls._get_setup_value(setup, "fixed_day_off")
+            )
             arrays["allowed_entry_hours_mask"][i] = cls._encode_allowed_entry_hours(
-                setup["allowed_entry_hours"]
+                cls._get_setup_value(setup, "allowed_entry_hours")
             )
             arrays["max_overcoverage_tolerance"][i] = float(
-                setup["max_overcoverage_tolerance"]
+                cls._get_setup_value(setup, "max_overcoverage_tolerance")
             )
-            arrays["closing_hour"][i] = cls._none_to_minus_one(setup["closing_hour"])
+            arrays["closing_hour"][i] = cls._none_to_minus_one(
+                cls._get_setup_value(setup, "closing_hour")
+            )
             arrays["policy"][i] = np.asarray(sample["policy"], dtype=np.float32)
             arrays["action_id"][i] = int(sample["action_id"])
             arrays["value"][i] = float(sample["value"])
+            arrays["policy_weight"][i] = float(
+                sample.get("policy_weight", DEFAULT_POLICY_WEIGHT)
+            )
+            arrays["sample_source"][i] = str(
+                metadata.get("sample_source", DEFAULT_SAMPLE_SOURCE)
+            )
+            arrays["source_trajectory_id"][i] = str(
+                metadata.get(
+                    "source_trajectory_id",
+                    sample.get("trajectory_id", ""),
+                )
+            )
+            arrays["model_version"][i] = int(
+                metadata.get("model_version", DEFAULT_MODEL_VERSION)
+            )
 
         return arrays
+
+    def _read_or_default(
+        self,
+        name: str,
+        read_idx: np.ndarray,
+        dtype,
+        default_value,
+    ) -> np.ndarray:
+        if name in self.samples_group:
+            return self.samples_group[name][read_idx].astype(dtype)
+        return np.full((len(read_idx),), default_value, dtype=dtype)
+
+    def _ensure_appendable_arrays(self, arrays: dict[str, np.ndarray]) -> None:
+        current_length = len(self)
+
+        for name, data in arrays.items():
+            if name not in self.samples_group:
+                self._create_empty_array(
+                    self.samples_group,
+                    name,
+                    dtype=data.dtype,
+                    shape=(current_length,) + data.shape[1:],
+                    chunks=self._chunks_for_array(data),
+                )
+                if current_length > 0:
+                    self.samples_group[name][:] = self._default_array_values(
+                        name=name,
+                        shape=(current_length,) + data.shape[1:],
+                        dtype=data.dtype,
+                    )
+
+    @classmethod
+    def _default_array_values(
+        cls,
+        name: str,
+        shape: tuple[int, ...],
+        dtype: np.dtype,
+    ) -> np.ndarray:
+        if name == "policy_weight":
+            return np.full(shape, DEFAULT_POLICY_WEIGHT, dtype=dtype)
+        if name == "model_version":
+            return np.full(shape, DEFAULT_MODEL_VERSION, dtype=dtype)
+        if name == "sample_source":
+            return np.full(shape, DEFAULT_SAMPLE_SOURCE, dtype=dtype)
+        if name == "source_trajectory_id":
+            return np.full(shape, "", dtype=dtype)
+        return np.zeros(shape, dtype=dtype)
 
     @staticmethod
     def _encode_allowed_entry_hours(value: list[int] | None) -> np.ndarray:
@@ -318,5 +533,43 @@ class SampleBuffer:
         )
 
     @staticmethod
+    def _create_empty_array(
+        group,
+        name: str,
+        dtype,
+        shape: tuple[int, ...],
+        chunks=None,
+    ):
+        if hasattr(group, "create_array"):
+            return group.create_array(
+                name=name,
+                shape=shape,
+                dtype=dtype,
+                chunks=chunks,
+                overwrite=True,
+            )
+        return group.create_dataset(
+            name=name,
+            shape=shape,
+            dtype=dtype,
+            chunks=chunks,
+            overwrite=True,
+        )
+
+    @staticmethod
     def _none_to_minus_one(value: Any) -> int:
         return -1 if value is None else int(value)
+
+    @staticmethod
+    def _get_value(obj: Any, key: str, default: Any = None) -> Any:
+        if isinstance(obj, dict):
+            return obj.get(key, default)
+        return getattr(obj, key, default)
+
+    @classmethod
+    def _get_state_value(cls, state: Any, key: str) -> Any:
+        return cls._get_value(state, key)
+
+    @classmethod
+    def _get_setup_value(cls, setup: Any, key: str) -> Any:
+        return cls._get_value(setup, key)

@@ -74,6 +74,23 @@ sample_buffer.build_from_trajectory_buffer(
 )
 ```
 
+Tambien puede recibir samples nuevos de forma incremental. Esto se usa cuando un
+orquestador recibe trayectorias finalizadas desde workers y las aplana para
+entrenamiento:
+
+```python
+sample_buffer.append_trajectories(generated_trajectories)
+```
+
+Cada trayectoria debe incluir:
+
+- `trajectory`
+- `problem_setup`
+- `trajectory_id`
+- `metadata`
+
+Los samples pueden incluir `policy_weight`; si no esta presente, se usa `1.0`.
+
 Itera batches:
 
 ```python
@@ -142,10 +159,13 @@ None
 Y = {
     "policy": ...,
     "value": ...,
+    "policy_weight": ...,
 }
 ```
 
 `value` corresponde al reward final asignado a todos los estados de la trayectoria.
+`policy_weight` escala la loss de policy por sample. No modifica `policy`: la
+policy sigue siendo una distribucion target normalizada.
 
 ## Nota sobre almacenamiento interno
 
