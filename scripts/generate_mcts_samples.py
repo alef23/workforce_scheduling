@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import json
 import random
 import sys
+import uuid
+from dataclasses import asdict
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -213,6 +218,21 @@ def parse_args() -> argparse.Namespace:
         default=1.0,
         help="Peso global de policy loss si --train-on-cycle. Default: 1.0.",
     )
+    parser.add_argument(
+        "--reports-dir",
+        default=None,
+        help="Directorio para logs JSONL. Default: <output-root>/reports.",
+    )
+    parser.add_argument(
+        "--run-id",
+        default=None,
+        help="ID opcional de corrida para logs. Default: generado automaticamente.",
+    )
+    parser.add_argument(
+        "--disable-report-logging",
+        action="store_true",
+        help="Desactiva logs persistentes en JSONL.",
+    )
     return parser.parse_args()
 
 
@@ -266,6 +286,13 @@ def main() -> None:
 
     source_path = Path(args.source_path) if args.source_path else paths.stock_trajectories
     sample_path = Path(args.sample_path) if args.sample_path else paths.samples
+    reports_dir = Path(args.reports_dir) if args.reports_dir else paths.reports
+    logger = None
+    if not args.disable_report_logging:
+        logger = MCTSGenerationRunLogger(
+            reports_dir=reports_dir,
+            run_id=args.run_id,
+        )
 
     source_ids = list_stock_trajectory_ids(source_path)
     selected_ids = select_source_ids(
@@ -275,6 +302,16 @@ def main() -> None:
         seed=args.seed,
     )
     if not selected_ids:
+        if logger is not None:
+            logger.log_run(
+                status="completed",
+                args=args,
+                source_path=source_path,
+                sample_path=sample_path,
+                source_trajectory_count=len(source_ids),
+                selected_trajectory_count=0,
+                report=None,
+            )
         print(f"[mcts_generation] source={source_path}", flush=True)
         print(f"[mcts_generation] samples={sample_path}", flush=True)
         print("[mcts_generation] selected_trajectories=0", flush=True)
@@ -329,8 +366,12 @@ def main() -> None:
         nonlocal current_checkpoint_path
         print(f"[mcts_generation] cycle_ready={cycle_report}", flush=True)
         if not args.train_on_cycle:
+            if logger is not None:
+                logger.log_cycle(cycle_report=cycle_report, learner_report=None)
             return None
         if cycle_report.saved_samples <= 0:
+            if logger is not None:
+                logger.log_cycle(cycle_report=cycle_report, learner_report=None)
             return None
 
         learner = ResNetSampleLearner(
@@ -349,6 +390,15 @@ def main() -> None:
             )
         )
         learner_report = learner.train()
+        if logger is not None:
+            logger.log_cycle(
+                cycle_report=cycle_report,
+                learner_report=learner_report,
+            )
+            logger.log_learner_steps(
+                cycle_index=cycle_report.cycle_index,
+                learner_report=learner_report,
+            )
         current_checkpoint_path = Path(learner_report.checkpoint_path)
         last_metrics = learner_report.metrics[-1]
         print(
@@ -391,8 +441,21 @@ def main() -> None:
     print(f"[mcts_generation] p_mcts={args.p_mcts}", flush=True)
     print(f"[mcts_generation] start_mode={args.start_mode}", flush=True)
     print(f"[mcts_generation] train_on_cycle={args.train_on_cycle}", flush=True)
+    if logger is not None:
+        print(f"[mcts_generation] run_id={logger.run_id}", flush=True)
+        print(f"[mcts_generation] reports_dir={logger.reports_dir}", flush=True)
 
     report = orchestrator.run(jobs)
+    if logger is not None:
+        logger.log_run(
+            status="completed" if not report.errors else "completed_with_errors",
+            args=args,
+            source_path=source_path,
+            sample_path=sample_path,
+            source_trajectory_count=len(source_ids),
+            selected_trajectory_count=len(selected_ids),
+            report=report,
+        )
 
     print("[mcts_generation] done", flush=True)
     print(f"completed_jobs={report.completed_jobs}", flush=True)
@@ -407,6 +470,134 @@ def main() -> None:
         print("errors:", flush=True)
         for error in report.errors[:10]:
             print(f"- {error}", flush=True)
+
+
+class MCTSGenerationRunLogger:
+    runs_filename = "mcts_generation_runs.jsonl"
+    cycles_filename = "mcts_generation_cycles.jsonl"
+    learner_steps_filename = "mcts_generation_learner_steps.jsonl"
+
+    def __init__(
+        self,
+        reports_dir: str | Path,
+        run_id: str | None = None,
+    ) -> None:
+        self.reports_dir = Path(reports_dir)
+        self.reports_dir.mkdir(parents=True, exist_ok=True)
+        self.run_id = str(run_id or self._new_run_id())
+
+    def log_cycle(
+        self,
+        cycle_report,
+        learner_report,
+    ) -> None:
+        payload = {
+            "event": "cycle",
+            "run_id": self.run_id,
+            "created_at": self._now(),
+            "cycle": asdict(cycle_report),
+            "learner": self._learner_summary(learner_report),
+        }
+        self._append_jsonl(self.reports_dir / self.cycles_filename, payload)
+
+    def log_learner_steps(
+        self,
+        cycle_index: int,
+        learner_report,
+    ) -> None:
+        for metric in learner_report.metrics:
+            payload = {
+                "event": "learner_step",
+                "run_id": self.run_id,
+                "created_at": self._now(),
+                "cycle_index": int(cycle_index),
+                "checkpoint_path": str(learner_report.checkpoint_path),
+                "sample_count": int(learner_report.sample_count),
+                "metric": asdict(metric),
+            }
+            self._append_jsonl(
+                self.reports_dir / self.learner_steps_filename,
+                payload,
+            )
+
+    def log_run(
+        self,
+        status: str,
+        args: argparse.Namespace,
+        source_path: str | Path,
+        sample_path: str | Path,
+        source_trajectory_count: int,
+        selected_trajectory_count: int,
+        report,
+    ) -> None:
+        payload = {
+            "event": "run",
+            "run_id": self.run_id,
+            "created_at": self._now(),
+            "status": str(status),
+            "source_path": str(source_path),
+            "sample_path": str(sample_path),
+            "source_trajectory_count": int(source_trajectory_count),
+            "selected_trajectory_count": int(selected_trajectory_count),
+            "args": self._args_to_dict(args),
+            "report": self._orchestrator_summary(report),
+        }
+        self._append_jsonl(self.reports_dir / self.runs_filename, payload)
+
+    @classmethod
+    def _learner_summary(cls, learner_report) -> dict[str, Any] | None:
+        if learner_report is None:
+            return None
+
+        last_metric = learner_report.metrics[-1] if learner_report.metrics else None
+        return {
+            "checkpoint_path": str(learner_report.checkpoint_path),
+            "global_step": int(learner_report.global_step),
+            "trained_steps": int(learner_report.trained_steps),
+            "sample_count": int(learner_report.sample_count),
+            "last_metric": asdict(last_metric) if last_metric is not None else None,
+        }
+
+    @classmethod
+    def _orchestrator_summary(cls, report) -> dict[str, Any] | None:
+        if report is None:
+            return None
+
+        return {
+            "source_buffer_path": str(report.source_buffer_path),
+            "sample_buffer_path": str(report.sample_buffer_path),
+            "total_jobs": int(report.total_jobs),
+            "completed_jobs": int(report.completed_jobs),
+            "failed_jobs": int(report.failed_jobs),
+            "generated_trajectories": int(report.generated_trajectories),
+            "saved_samples": int(report.saved_samples),
+            "used_mcts_jobs": int(report.used_mcts_jobs),
+            "reweighted_jobs": int(report.reweighted_jobs),
+            "cycle_count": len(report.cycle_reports),
+            "errors": list(report.errors),
+        }
+
+    @staticmethod
+    def _args_to_dict(args: argparse.Namespace) -> dict[str, Any]:
+        return {
+            key: str(value) if isinstance(value, Path) else value
+            for key, value in vars(args).items()
+        }
+
+    @staticmethod
+    def _append_jsonl(path: Path, payload: dict[str, Any]) -> None:
+        with path.open("a", encoding="utf-8") as file:
+            file.write(json.dumps(payload, sort_keys=True, default=str))
+            file.write("\n")
+
+    @staticmethod
+    def _now() -> str:
+        return datetime.now(timezone.utc).isoformat()
+
+    @staticmethod
+    def _new_run_id() -> str:
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        return f"mcts_{timestamp}_{uuid.uuid4().hex[:8]}"
 
 
 if __name__ == "__main__":

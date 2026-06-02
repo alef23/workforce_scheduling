@@ -2,6 +2,13 @@
 
 Comandos operativos para ejecutar tareas del proyecto desde consola.
 
+Para una guia completa del flujo de entrenamiento, desde trayectorias raw hasta
+MCTS + learner + reload de pesos, ver:
+
+```text
+docs/training_pipeline.md
+```
+
 ## `generate_raw_demand_dataset.py`
 
 Genera trayectorias raw resueltas usando `RawDemandTrajectoryWorker` y las guarda
@@ -219,6 +226,31 @@ uv run python scripts/generate_mcts_samples.py \
 Con `--train-on-cycle`, el orquestador espera a que los workers terminen sus
 trayectorias activas, el learner entrena desde el `SampleBuffer`, guarda un
 checkpoint y devuelve ese path para que el evaluator recargue pesos.
+
+Logs persistentes:
+
+Por defecto `generate_mcts_samples.py` escribe JSONL en `datasets/reports/`:
+
+```text
+mcts_generation_runs.jsonl
+mcts_generation_cycles.jsonl
+mcts_generation_learner_steps.jsonl
+```
+
+Se puede fijar un ID de corrida o cambiar el directorio:
+
+```bash
+uv run python scripts/generate_mcts_samples.py \
+  --run-id smoke_001 \
+  --reports-dir datasets/reports \
+  ...
+```
+
+Para desactivar estos logs:
+
+```bash
+uv run python scripts/generate_mcts_samples.py --disable-report-logging ...
+```
 
 Salida por defecto:
 
