@@ -85,6 +85,32 @@ el orquestador las aplaste y persista.
 - evaluator;
 - `SampleBuffer`.
 
-La primera version es secuencial (`n_workers=1`) y no maneja learner ni ciclos.
-Sirve para validar end-to-end que el worker devuelve trayectorias finalizadas y
-que el orquestador las guarda como samples planos.
+Con `n_workers=1` corre secuencial y puede recibir cualquier evaluator compatible
+con MCTS.
+
+Con `n_workers > 1` usa workers persistentes y requiere
+`centralized_evaluator_config`. En ese modo:
+
+- el orquestador arranca un unico `CentralizedEvaluatorServer`;
+- cada worker recibe un `CentralizedEvaluatorClient`;
+- los workers comparten `request_queue`;
+- cada worker tiene su propia `response_queue`;
+- el orquestador recibe resultados finalizados y escribe `SampleBuffer`.
+
+`sample_limit_per_cycle` permite cortar la asignacion de nuevas trayectorias
+cuando el ciclo alcanza un limite de samples. El orquestador no corta
+trayectorias activas: espera a que todos los workers terminen su trabajo actual
+y recien entonces cierra el ciclo.
+
+Se puede pasar un callback:
+
+```python
+on_cycle_ready(cycle_report) -> checkpoint_path | None
+```
+
+Si devuelve un checkpoint, el orquestador pide `reload_weights` al evaluator
+antes de continuar. El learner real se conectara por ese hook.
+
+El script `scripts/generate_mcts_samples.py` ya expone ese flujo con
+`--train-on-cycle`: al cerrar un ciclo instancia `ResNetSampleLearner`, entrena
+desde el `SampleBuffer`, guarda un checkpoint y devuelve el path al orquestador.

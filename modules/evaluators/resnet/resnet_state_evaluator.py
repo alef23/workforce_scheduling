@@ -37,19 +37,35 @@ class ResNetStateEvaluator(EvaluatorProtocol):
             checkpoint_dir=checkpoint_dir,
         )
 
-        checkpoint = torch.load(self.checkpoint_path, map_location=self.device)
+        self.model: WorkforceResNet | None = None
+        self.action_space_size = 55
+        self.reload_weights(self.checkpoint_path)
+
+        self.encoder = StateEncoder(
+            demand_ref=demand_ref,
+            stock_ref=stock_ref,
+            device=self.device,
+        )
+
+    def reload_weights(self, checkpoint_path: str | Path) -> int:
+        """
+        Recarga pesos desde un checkpoint y devuelve el global_step cargado.
+        """
+        path = self._resolve_checkpoint_path(
+            checkpoint_path=checkpoint_path,
+            checkpoint_dir=None,
+        )
+        checkpoint = torch.load(path, map_location=self.device)
         model_config = checkpoint.get("model_config", {})
 
         self.model = WorkforceResNet(**model_config).to(self.device)
         self.model.load_state_dict(checkpoint["model_state_dict"])
         self.model.eval()
 
+        self.checkpoint_path = path
         self.action_space_size = int(self.model.action_space_size)
-        self.encoder = StateEncoder(
-            demand_ref=demand_ref,
-            stock_ref=stock_ref,
-            device=self.device,
-        )
+        training_state = checkpoint.get("training_state", {})
+        return int(training_state.get("global_step", 0))
 
     def predict(self, state: WorkforceState) -> tuple[np.ndarray, float]:
         """
@@ -67,13 +83,19 @@ class ResNetStateEvaluator(EvaluatorProtocol):
 
         with torch.no_grad():
             encoded = self.encoder(X)
-            policy_logits, value_tensor = self.model(encoded)
+            policy_logits, value_tensor = self._model(encoded)
             policy_tensor = F.softmax(policy_logits, dim=1)
 
         policy = policy_tensor.squeeze(0).detach().cpu().numpy().astype(float)
         value = float(value_tensor.squeeze(0).detach().cpu().item())
 
         return policy, value
+
+    @property
+    def _model(self) -> WorkforceResNet:
+        if self.model is None:
+            raise RuntimeError("El modelo todavia no fue cargado.")
+        return self.model
 
     def _build_encoder_input(self, state: WorkforceState) -> dict[str, Any]:
         return {

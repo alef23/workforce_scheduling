@@ -4,6 +4,7 @@ from .config import (
     ReweightedPolicyConfig,
 )
 from .orchestrator import (
+    MCTSCycleReport,
     MCTSGenerationOrchestrator,
     MCTSOrchestratorConfig,
     MCTSOrchestratorReport,
@@ -21,6 +22,7 @@ __all__ = [
     "MCTSGenerationOrchestrator",
     "MCTSGenerationWorker",
     "MCTSStartMode",
+    "MCTSCycleReport",
     "MCTSOrchestratorConfig",
     "MCTSOrchestratorReport",
     "MCTSWorkerResult",

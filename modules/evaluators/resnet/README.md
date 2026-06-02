@@ -50,6 +50,15 @@ policy, value = evaluator.predict(state)
 
 Si no se pasa `checkpoint_path`, el wrapper busca el checkpoint `.pt` más reciente dentro de `checkpoints/`.
 
+El wrapper tambien soporta:
+
+```python
+global_step = evaluator.reload_weights("modules/evaluators/resnet/checkpoints/workforce_resnet_001.pt")
+```
+
+Esto permite que el orquestador secuencial use el mismo contrato de reload que
+el evaluador centralizado.
+
 ## StateEncoder
 
 `StateEncoder` convierte un diccionario con datos de `ProblemSetup` y `WorkforceState` en un tensor:

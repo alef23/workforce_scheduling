@@ -34,7 +34,7 @@ class CentralizedEvaluatorClient(EvaluatorProtocol):
 
     def __init__(
         self,
-        setup: ProblemSetup,
+        setup: ProblemSetup | None,
         client_id: str,
         request_queue: mp.Queue,
         response_queue: mp.Queue,
@@ -49,6 +49,9 @@ class CentralizedEvaluatorClient(EvaluatorProtocol):
         self.model_version: int | None = None
 
     def predict(self, state: WorkforceState) -> tuple[np.ndarray, float]:
+        if self.setup is None:
+            raise RuntimeError("CentralizedEvaluatorClient.setup no fue configurado.")
+
         request_id = self._request_id()
         self.request_queue.put(
             PredictRequest(

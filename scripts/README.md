@@ -164,3 +164,64 @@ uv run python scripts/generate_stock_adjusted_dataset.py \
 `--skip-existing` busca IDs `stock_<raw_id>` ya guardados en el output y los
 saltea. Si se usa junto con `--overwrite`, se ignora porque `--overwrite` recrea
 el buffer.
+
+## `generate_mcts_samples.py`
+
+Genera samples planos desde el buffer `stock_adjusted`.
+
+Por cada trayectoria stock:
+
+- con probabilidad `--p-mcts`, genera trayectorias con MCTS;
+- si no usa MCTS, recalcula la policy dando mas peso a la accion elegida;
+- el orquestador aplana las trayectorias resultantes en `SampleBuffer`.
+
+Comando minimo de prueba:
+
+```bash
+uv run python scripts/generate_mcts_samples.py \
+  --workers 1 \
+  --n-trajectories 1 \
+  --p-mcts 0 \
+  --overwrite-samples
+```
+
+Comando con evaluador centralizado y MCTS:
+
+```bash
+uv run python scripts/generate_mcts_samples.py \
+  --workers 2 \
+  --n-trajectories 10 \
+  --p-mcts 0.2 \
+  --start-mode initial_only \
+  --mcts-simulations 16 \
+  --checkpoint-path modules/evaluators/resnet/checkpoints/workforce_resnet_000.pt \
+  --device cuda \
+  --sample-limit-per-cycle 10000 \
+  --overwrite-samples
+```
+
+Comando con entrenamiento sincrono al cerrar cada ciclo:
+
+```bash
+uv run python scripts/generate_mcts_samples.py \
+  --workers 2 \
+  --n-trajectories 100 \
+  --p-mcts 0.2 \
+  --sample-limit-per-cycle 10000 \
+  --train-on-cycle \
+  --learner-steps 100 \
+  --learner-batch-size 64 \
+  --checkpoint-path modules/evaluators/resnet/checkpoints/workforce_resnet_000.pt \
+  --checkpoint-dir modules/evaluators/resnet/checkpoints \
+  --device cuda
+```
+
+Con `--train-on-cycle`, el orquestador espera a que los workers terminen sus
+trayectorias activas, el learner entrena desde el `SampleBuffer`, guarda un
+checkpoint y devuelve ese path para que el evaluator recargue pesos.
+
+Salida por defecto:
+
+```text
+datasets/samples/samples.zarr
+```
