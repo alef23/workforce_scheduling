@@ -220,6 +220,42 @@ uv run python scripts/generate_mcts_samples.py \
   --overwrite-samples
 ```
 
+## `evaluate_test_set_mcts.py`
+
+Evalua el test set fijo de estados iniciales con MCTS usando la ultima ResNet
+por defecto. Guarda las trayectorias en un `TrajectoryBuffer` separado y deja
+metricas agregadas en JSON.
+
+Comando recomendado:
+
+```bash
+uv run python scripts/evaluate_test_set_mcts.py \
+  --sample-path datasets/test/initial_states.zarr \
+  --output-root datasets/evaluation/mcts_test \
+  --workers 4 \
+  --mcts-simulations 500 \
+  --device cuda \
+  --overwrite
+```
+
+Salida:
+
+```text
+datasets/evaluation/mcts_test/
++-- trajectories.zarr
++-- reports/
+    +-- runs.jsonl
+    +-- trajectories.jsonl
+    +-- run_summary.json
+```
+
+`runs.jsonl` mantiene el historial de corridas para que
+`build_training_dashboard.py` grafique la evolucion de positivos sobre total y
+el resto de metricas del test set.
+
+El script guarda incrementalmente cada trayectoria y su fila JSONL apenas
+termina el job correspondiente.
+
 Comando con evaluador centralizado y MCTS:
 
 ```bash

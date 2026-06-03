@@ -37,6 +37,7 @@ scripts/
 +-- generate_initial_state_test_set.py
 +-- generate_stock_adjusted_dataset.py
 +-- generate_mcts_samples.py
++-- evaluate_test_set_mcts.py
 
 modules/
 +-- dataset_generation/
@@ -139,6 +140,13 @@ datasets/
 |   +-- samples.zarr
 +-- test/
 |   +-- initial_states.zarr
++-- evaluation/
+|   +-- mcts_test/
+|       +-- trajectories.zarr
+|       +-- reports/
+|           +-- runs.jsonl
+|           +-- trajectories.jsonl
+|           +-- run_summary.json
 +-- reports/
 ```
 
@@ -522,6 +530,84 @@ Con GPU local de 8GB, el modo recomendado es:
 - empezar con pocos `mcts-simulations` y pocos `learner-steps`;
 - subir gradualmente si la memoria y el tiempo son estables.
 
+### Paso 4b. Evaluar el test set fijo con MCTS
+
+Este paso toma `datasets/test/initial_states.zarr`, corre MCTS desde cada estado
+inicial usando un checkpoint ResNet, y guarda las trayectorias generadas en un
+buffer separado de evaluacion. No entrena, no escribe `SampleBuffer` y no toca
+los buffers raw/stock/MCTS de entrenamiento.
+
+Comando recomendado:
+
+```bash
+uv run python scripts/evaluate_test_set_mcts.py \
+  --sample-path datasets/test/initial_states.zarr \
+  --output-root datasets/evaluation/mcts_test \
+  --workers 4 \
+  --mcts-simulations 500 \
+  --device cuda \
+  --overwrite
+```
+
+Si no se pasa `--checkpoint-path`, el script usa el checkpoint `.pt` con mayor
+step numerico en:
+
+```text
+modules/evaluators/resnet/checkpoints
+```
+
+Salida:
+
+```text
+datasets/evaluation/mcts_test/
++-- trajectories.zarr
++-- reports/
+    +-- runs.jsonl
+    +-- trajectories.jsonl
+    +-- run_summary.json
+```
+
+`trajectories.zarr` guarda una trayectoria por sample evaluado, con el estado
+terminal incluido como ultimo estado. El estado terminal usa `action_id = -1` y
+policy cero porque ya no hay accion a elegir.
+
+Las trayectorias y sus metricas se escriben incrementalmente a medida que cada
+job termina. Si una corrida larga se corta, los jobs ya finalizados quedan
+guardados en `trajectories.zarr` y `trajectories.jsonl`.
+
+`trajectories.jsonl` guarda una fila por trayectoria con:
+
+```text
+trajectory_id
+source_sample_index
+source_trajectory_id
+checkpoint_path
+checkpoint_step
+mcts_simulations
+elapsed_seconds
+states_count
+final_reward
+original_value
+value_error
+```
+
+`run_summary.json` agrega la ultima corrida completa: cantidad de rewards
+positivos, cuantas trayectorias mejoraron al reward original del sample,
+promedios y errores. `runs.jsonl` mantiene una fila por corrida para graficar la
+evolucion historica de checkpoints.
+
+Comando chico para prueba:
+
+```bash
+uv run python scripts/evaluate_test_set_mcts.py \
+  --n-samples 5 \
+  --workers 1 \
+  --mcts-simulations 16 \
+  --device cpu \
+  --output-root /tmp/mcts_test_eval \
+  --overwrite
+```
+
 ### Paso 5. Inspeccionar checkpoints y samples
 
 Checkpoints:
@@ -603,11 +689,14 @@ watch -n 30 'uv run python scripts/build_training_dashboard.py'
 ```
 
 El dashboard principal muestra corridas, ciclos, losses del learner,
-checkpoints, conteos de MCTS vs reweighted, resumen de buffers Zarr y analisis
-agregado de distribuciones. El explorador de trayectorias vive en
+checkpoints, conteos de MCTS vs reweighted, resumen de buffers Zarr, analisis
+agregado de distribuciones y la seccion `Evaluacion MCTS del test set`. Esa
+seccion lee `datasets/evaluation/mcts_test/reports/runs.jsonl` para graficar la
+evolucion de positivos sobre total, `positive_rate`, mejora contra el reward
+original, rewards medios y tiempos. El explorador de trayectorias vive en
 `trajectory_explorer.html` y permite navegar estado por estado las ultimas
-trayectorias cargadas. Ambos son una foto del estado actual; no escriben ni
-modifican buffers.
+trayectorias cargadas, incluyendo el buffer `Test MCTS` si existe. Ambos son
+una foto del estado actual; no escriben ni modifican buffers.
 
 ### Paso 6. Escalar la corrida
 
@@ -668,6 +757,7 @@ uv run python scripts/generate_raw_demand_dataset.py --help
 uv run python scripts/generate_initial_state_test_set.py --help
 uv run python scripts/generate_stock_adjusted_dataset.py --help
 uv run python scripts/generate_mcts_samples.py --help
+uv run python scripts/evaluate_test_set_mcts.py --help
 ```
 
 ## Pruebas recomendadas despues de cambios

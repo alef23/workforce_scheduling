@@ -48,6 +48,16 @@ def parse_args() -> argparse.Namespace:
         help="Directorio de checkpoints ResNet.",
     )
     parser.add_argument(
+        "--test-eval-reports-dir",
+        default="datasets/evaluation/mcts_test/reports",
+        help="Directorio con reportes de evaluate_test_set_mcts.py.",
+    )
+    parser.add_argument(
+        "--test-eval-trajectory-path",
+        default="datasets/evaluation/mcts_test/trajectories.zarr",
+        help="TrajectoryBuffer de evaluacion MCTS del test set.",
+    )
+    parser.add_argument(
         "--output",
         default=None,
         help="HTML destino. Default: <reports-dir>/training_dashboard.html.",
@@ -96,8 +106,14 @@ def main() -> None:
             "stock_path": str(args.stock_path),
             "sample_path": str(args.sample_path),
             "checkpoint_dir": str(args.checkpoint_dir),
+            "test_eval_reports_dir": str(args.test_eval_reports_dir),
+            "test_eval_trajectory_path": str(args.test_eval_trajectory_path),
         },
         "logs": read_training_logs(reports_dir),
+        "test_evaluation": read_test_evaluation_reports(
+            reports_dir=Path(args.test_eval_reports_dir),
+            trajectory_path=args.test_eval_trajectory_path,
+        ),
         "buffers": {
             "raw": summarize_trajectory_buffer(
                 args.raw_path,
@@ -110,6 +126,10 @@ def main() -> None:
             "samples": summarize_sample_buffer(
                 args.sample_path,
                 max_scan=int(args.max_sample_scan),
+            ),
+            "test_mcts": summarize_trajectory_buffer(
+                args.test_eval_trajectory_path,
+                max_preview=int(args.max_trajectory_preview),
             ),
         },
         "analysis": build_dataset_analysis(
@@ -133,6 +153,10 @@ def main() -> None:
                 limit=int(args.explorer_trajectory_count),
                 max_scan=int(args.max_sample_scan),
             ),
+            "test_mcts": load_trajectory_explorer(
+                args.test_eval_trajectory_path,
+                limit=int(args.explorer_trajectory_count),
+            ),
         },
     }
     data["derived"] = build_derived_summary(data)
@@ -154,6 +178,69 @@ def read_training_logs(reports_dir: Path) -> dict[str, list[dict[str, Any]]]:
         "runs": read_jsonl(reports_dir / "mcts_generation_runs.jsonl"),
         "cycles": read_jsonl(reports_dir / "mcts_generation_cycles.jsonl"),
         "learner_steps": read_jsonl(reports_dir / "mcts_generation_learner_steps.jsonl"),
+    }
+
+
+def read_test_evaluation_reports(
+    reports_dir: Path,
+    trajectory_path: str | Path,
+) -> dict[str, Any]:
+    runs = read_jsonl(reports_dir / "runs.jsonl")
+    latest_summary_path = reports_dir / "run_summary.json"
+    if latest_summary_path.exists():
+        try:
+            latest_summary = json.loads(latest_summary_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            latest_summary = {
+                "event": "decode_error",
+                "path": str(latest_summary_path),
+                "error": str(exc),
+            }
+        if latest_summary and not runs:
+            runs = [latest_summary]
+    else:
+        latest_summary = runs[-1] if runs else None
+
+    trajectories = read_jsonl(reports_dir / "trajectories.jsonl")
+    final_rewards = [
+        float(row["final_reward"])
+        for row in trajectories
+        if _safe_float(row.get("final_reward")) is not None
+    ]
+    original_values = [
+        float(row["original_value"])
+        for row in trajectories
+        if _safe_float(row.get("original_value")) is not None
+    ]
+    value_errors = [
+        float(row["value_error"])
+        for row in trajectories
+        if _safe_float(row.get("value_error")) is not None
+    ]
+    elapsed = [
+        float(row["elapsed_seconds"])
+        for row in trajectories
+        if _safe_float(row.get("elapsed_seconds")) is not None
+    ]
+    states_count = [
+        float(row["states_count"])
+        for row in trajectories
+        if _safe_float(row.get("states_count")) is not None
+    ]
+
+    return {
+        "exists": reports_dir.exists(),
+        "reports_dir": str(reports_dir),
+        "trajectory_path": str(trajectory_path),
+        "runs": runs,
+        "latest_summary": latest_summary,
+        "trajectories": trajectories,
+        "trajectory_count": len(trajectories),
+        "final_reward": distribution(final_rewards),
+        "original_value": distribution(original_values),
+        "value_error": distribution(value_errors),
+        "elapsed_seconds": distribution(elapsed),
+        "states_count": distribution(states_count),
     }
 
 
@@ -1087,6 +1174,11 @@ def render_overview_dashboard(data: dict[str, Any]) -> str:
     </section>
 
     <section class="panel">
+      <h2>Evaluacion MCTS del test set</h2>
+      <div id="testEval"></div>
+    </section>
+
+    <section class="panel">
       <h2>Analisis de trayectorias</h2>
       <div class="two-col">
         <div>
@@ -1303,6 +1395,171 @@ def render_overview_dashboard(data: dict[str, Any]) -> str:
       ]);
     }}
 
+    function metricLineChart(title, rows, series, xLabel = 'run') {{
+      const validRows = rows.filter(row => series.some(s => typeof row[s.key] === 'number'));
+      if (!validRows.length) return `<div class="panel"><h3>${{title}}</h3><p class="subtle">Sin datos.</p></div>`;
+      const width = 900, height = 250, pad = 42;
+      const values = validRows.flatMap(row => series.map(s => row[s.key]).filter(v => typeof v === 'number'));
+      const minY = Math.min(...values);
+      const maxY = Math.max(...values);
+      const spanY = maxY - minY || 1;
+      const x = i => pad + (i / Math.max(1, validRows.length - 1)) * (width - 2 * pad);
+      const y = v => height - pad - ((v - minY) / spanY) * (height - 2 * pad);
+      const paths = series.map(s => {{
+        const points = validRows.map((row, i) => {{
+          const value = typeof row[s.key] === 'number' ? row[s.key] : minY;
+          return `${{x(i)}},${{y(value)}}`;
+        }}).join(' ');
+        return `<polyline points="${{points}}" fill="none" stroke="${{s.color}}" stroke-width="2.5"/>`;
+      }}).join('');
+      const dots = series.map(s => validRows.map((row, i) => {{
+        const value = row[s.key];
+        if (typeof value !== 'number') return '';
+        const label = row.run_id || `${{xLabel}} ${{i + 1}}`;
+        return `<circle cx="${{x(i)}}" cy="${{y(value)}}" r="3.5" fill="${{s.color}}">
+          <title>${{label}} · ${{s.label}}=${{fmt(value)}}</title>
+        </circle>`;
+      }}).join('')).join('');
+      const legend = series.map((s, i) => `<text x="${{pad + i * 170}}" y="18" fill="${{s.color}}" font-size="12">${{s.label}}</text>`).join('');
+      return `<div class="panel">
+        <h3>${{title}}</h3>
+        <div class="chart">
+          <svg viewBox="0 0 ${{width}} ${{height}}" preserveAspectRatio="none">
+            ${{legend}}
+            <line x1="${{pad}}" y1="${{height-pad}}" x2="${{width-pad}}" y2="${{height-pad}}" stroke="#d9dee7"/>
+            <line x1="${{pad}}" y1="${{pad}}" x2="${{pad}}" y2="${{height-pad}}" stroke="#d9dee7"/>
+            <text x="4" y="${{pad}}" font-size="11" fill="#667085">${{fmt(maxY)}}</text>
+            <text x="4" y="${{height-pad}}" font-size="11" fill="#667085">${{fmt(minY)}}</text>
+            ${{paths}}
+            ${{dots}}
+          </svg>
+        </div>
+      </div>`;
+    }}
+
+    function positiveRatioChart(runs) {{
+      if (!runs.length) return `<div class="panel"><h3>Casos positivos / total</h3><p class="subtle">Sin datos.</p></div>`;
+      const width = 900, height = 250, pad = 42;
+      const maxTotal = Math.max(...runs.map(row => row.completed_jobs || row.total_jobs || 0), 1);
+      const barW = (width - 2 * pad) / runs.length;
+      const bars = runs.map((row, i) => {{
+        const total = row.completed_jobs || row.total_jobs || 0;
+        const positives = row.positive_count || 0;
+        const totalH = (total / maxTotal) * (height - 2 * pad);
+        const posH = (positives / maxTotal) * (height - 2 * pad);
+        const x = pad + i * barW + 3;
+        const yTotal = height - pad - totalH;
+        const yPos = height - pad - posH;
+        return `<g>
+          <rect x="${{x}}" y="${{yTotal}}" width="${{Math.max(3, barW - 6)}}" height="${{totalH}}" fill="#d9dee7">
+            <title>${{row.run_id}} total=${{total}}</title>
+          </rect>
+          <rect x="${{x}}" y="${{yPos}}" width="${{Math.max(3, barW - 6)}}" height="${{posH}}" fill="#116a5b">
+            <title>${{row.run_id}} positivos=${{positives}}/${{total}}</title>
+          </rect>
+        </g>`;
+      }}).join('');
+      return `<div class="panel">
+        <h3>Casos positivos / total</h3>
+        <div class="subtle">Verde: positivos. Gris: total evaluado por corrida.</div>
+        <div class="chart">
+          <svg viewBox="0 0 ${{width}} ${{height}}" preserveAspectRatio="none">
+            <line x1="${{pad}}" y1="${{height-pad}}" x2="${{width-pad}}" y2="${{height-pad}}" stroke="#d9dee7"/>
+            <line x1="${{pad}}" y1="${{pad}}" x2="${{pad}}" y2="${{height-pad}}" stroke="#d9dee7"/>
+            <text x="4" y="${{pad}}" font-size="11" fill="#667085">${{fmt(maxTotal)}}</text>
+            ${{bars}}
+          </svg>
+        </div>
+      </div>`;
+    }}
+
+    function renderTestEvaluation() {{
+      const evaluation = DATA.test_evaluation || {{}};
+      const runs = (evaluation.runs || []).slice().sort((a, b) => {{
+        const aStep = a.checkpoint_step ?? -1;
+        const bStep = b.checkpoint_step ?? -1;
+        if (aStep !== bStep) return aStep - bStep;
+        return String(a.created_at || '').localeCompare(String(b.created_at || ''));
+      }});
+      const latest = evaluation.latest_summary || runs[runs.length - 1];
+      if (!runs.length && !(evaluation.trajectories || []).length) {{
+        document.getElementById('testEval').innerHTML = `
+          <p class="subtle">Sin corridas de evaluacion. Ejecutar <code>scripts/evaluate_test_set_mcts.py</code> y luego reconstruir este dashboard.</p>
+          <p class="subtle">Reportes esperados: <code>${{evaluation.reports_dir || 'datasets/evaluation/mcts_test/reports'}}</code>.</p>
+        `;
+        return;
+      }}
+
+      const cards = [
+        ['Runs evaluacion', runs.length],
+        ['Ultimo checkpoint', latest?.checkpoint_step],
+        ['Ultimo positivos', `${{fmt(latest?.positive_count)}} / ${{fmt(latest?.completed_jobs || latest?.total_jobs)}}`],
+        ['Positive rate', latest?.positive_rate],
+        ['Mejor que original', latest?.better_than_original_rate],
+        ['Reward medio', latest?.mean_final_reward],
+        ['Value error medio', latest?.mean_value_error],
+        ['Trayectorias log', evaluation.trajectory_count],
+      ];
+
+      const runTable = table(runs.slice().reverse(), [
+        {{label: 'Run', render: r => `<span class="pill">${{r.run_id}}</span>`}},
+        {{label: 'Step', render: r => fmt(r.checkpoint_step)}},
+        {{label: 'Sims', render: r => fmt(r.mcts_simulations)}},
+        {{label: 'Jobs', render: r => fmt(r.completed_jobs)}},
+        {{label: 'Failed', render: r => fmt(r.failed_jobs)}},
+        {{label: 'Positivos', render: r => `${{fmt(r.positive_count)}} / ${{fmt(r.completed_jobs || r.total_jobs)}}`}},
+        {{label: 'Positive rate', render: r => fmt(r.positive_rate)}},
+        {{label: 'Mejor rate', render: r => fmt(r.better_than_original_rate)}},
+        {{label: 'Reward medio', render: r => fmt(r.mean_final_reward)}},
+        {{label: 'Value error', render: r => fmt(r.mean_value_error)}},
+        {{label: 'Segundos', render: r => fmt(r.elapsed_seconds)}},
+      ]);
+
+      const trajectories = (evaluation.trajectories || []).slice(-40).reverse();
+      const trajectoryTable = table(trajectories, [
+        {{label: 'Trajectory', render: r => r.trajectory_id}},
+        {{label: 'Sample', render: r => fmt(r.source_sample_index)}},
+        {{label: 'Step', render: r => fmt(r.checkpoint_step)}},
+        {{label: 'States', render: r => fmt(r.states_count)}},
+        {{label: 'Reward', render: r => fmt(r.final_reward)}},
+        {{label: 'Original', render: r => fmt(r.original_value)}},
+        {{label: 'Error', render: r => fmt(r.value_error)}},
+        {{label: 'Positivo', render: r => r.is_positive ? 'si' : 'no'}},
+        {{label: 'Mejor', render: r => r.is_better_than_original ? 'si' : 'no'}},
+        {{label: 'Segundos', render: r => fmt(r.elapsed_seconds)}},
+      ]);
+
+      document.getElementById('testEval').innerHTML = `
+        <div class="grid">
+          ${{cards.map(([label, value]) => `<div class="card"><div class="metric">${{fmt(value)}}</div><div class="label">${{label}}</div></div>`).join('')}}
+        </div>
+        <div class="two-col">
+          <div>
+            ${{positiveRatioChart(runs)}}
+            ${{metricLineChart('Rates por corrida', runs, [
+              {{key: 'positive_rate', label: 'positive_rate', color: '#116a5b'}},
+              {{key: 'better_than_original_rate', label: 'better_rate', color: '#b54708'}},
+            ])}}
+            ${{metricLineChart('Reward medio vs original', runs, [
+              {{key: 'mean_final_reward', label: 'final_reward', color: '#116a5b'}},
+              {{key: 'mean_original_value', label: 'original', color: '#344054'}},
+              {{key: 'mean_value_error', label: 'value_error', color: '#b54708'}},
+            ])}}
+          </div>
+          <div>
+            ${{histogramPanel('Reward final por trayectoria', evaluation.final_reward, '#116a5b')}}
+            ${{histogramPanel('Value error por trayectoria', evaluation.value_error, '#b54708')}}
+            ${{histogramPanel('Estados por trayectoria', evaluation.states_count, '#344054')}}
+            ${{histogramPanel('Tiempo por trayectoria', evaluation.elapsed_seconds, '#667085')}}
+          </div>
+        </div>
+        <div class="two-col">
+          <div class="panel"><h3>Corridas</h3>${{runTable}}</div>
+          <div class="panel"><h3>Ultimas trayectorias evaluadas</h3>${{trajectoryTable}}</div>
+        </div>
+      `;
+    }}
+
     function renderCards() {{
       const runs = rowsForRun(DATA.logs.runs);
       const cycles = rowsForRun(DATA.logs.cycles);
@@ -1409,6 +1666,7 @@ def render_overview_dashboard(data: dict[str, Any]) -> str:
         ['Raw', buffers.raw],
         ['Stock', buffers.stock],
         ['Samples', buffers.samples],
+        ['Test MCTS', buffers.test_mcts],
       ], [
         {{label: 'Buffer', render: r => r[0]}},
         {{label: 'Existe', render: r => r[1].exists ? 'si' : 'no'}},
@@ -1433,6 +1691,7 @@ def render_overview_dashboard(data: dict[str, Any]) -> str:
       ]);
       barChart('cycleChart', rowsForRun(DATA.logs.cycles));
       renderTables();
+      renderTestEvaluation();
       renderTrajectoryAnalysis('rawAnalysis', DATA.analysis.raw);
       renderTrajectoryAnalysis('stockAnalysis', DATA.analysis.stock);
       renderSampleAnalysis();
@@ -1744,6 +2003,7 @@ def render_dashboard(data: dict[str, Any]) -> str:
         <button class="tab active" data-explorer-source="raw">Raw</button>
         <button class="tab" data-explorer-source="stock">Stock</button>
         <button class="tab" data-explorer-source="samples">SampleBuffer</button>
+        <button class="tab" data-explorer-source="test_mcts">Test MCTS</button>
       </div>
       <div class="toolbar">
         <label>Trayectoria <select id="trajectorySelect"></select></label>
@@ -1957,6 +2217,7 @@ def render_dashboard(data: dict[str, Any]) -> str:
       document.getElementById('buffers').innerHTML = table([
         ['Raw', buffers.raw],
         ['Stock', buffers.stock],
+        ['Test MCTS', buffers.test_mcts],
       ], [
         {{label: 'Buffer', render: r => r[0]}},
         {{label: 'Existe', render: r => r[1].exists ? 'si' : 'no'}},
