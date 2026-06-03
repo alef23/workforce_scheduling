@@ -39,10 +39,16 @@ uv run python scripts/generate_raw_demand_dataset.py 40 --workers 4 --overwrite 
 | `--closing-hour` | `22` |
 | `--max-overcoverage-tolerance` | `0.1` |
 | `--noise-k-max` | `0.8` |
+| `--noise-k-lambda` | `10.0` |
 | `--mod-4-max` | `20` |
 | `--mod-6-max` | `20` |
 | `--mod-8-max` | `20` |
 | `--overwrite` | desactivado |
+
+El `k` efectivo del ruido se samplea directamente en `[0, --noise-k-max]`
+desde una exponencial truncada. `--noise-k-lambda` controla cuanta masa queda
+cerca de cero: valores mas altos generan descuentos efectivos mas chicos con
+mayor frecuencia.
 
 ## Salida
 
@@ -175,6 +181,25 @@ uv run python scripts/generate_stock_adjusted_dataset.py \
 saltea. Si se usa junto con `--overwrite`, se ignora porque `--overwrite` recrea
 el buffer.
 
+## `generate_initial_state_test_set.py`
+
+Genera un `SampleBuffer` de validacion con solo el estado inicial de cada
+trayectoria raw simulada. La trayectoria completa se resuelve internamente para
+guardar `value = final_reward`, pero no se guarda en un `TrajectoryBuffer`.
+
+Comando recomendado:
+
+```bash
+uv run python scripts/generate_initial_state_test_set.py 100 \
+  --output-path datasets/test/initial_states.zarr \
+  --workers 4 \
+  --overwrite \
+  --seed 12345
+```
+
+El formato es compatible con `SampleBuffer`; `sample_source` queda como
+`test_initial_raw` y `step_index` queda en `0`.
+
 ## `generate_mcts_samples.py`
 
 Genera samples planos desde el buffer `stock_adjusted`.
@@ -269,7 +294,12 @@ Por defecto genera:
 
 ```text
 datasets/reports/training_dashboard.html
+datasets/reports/trajectory_explorer.html
 ```
+
+`training_dashboard.html` contiene monitoreo y analisis agregado de
+distribuciones. `trajectory_explorer.html` contiene el explorador estado por
+estado de las ultimas trayectorias seleccionadas de cada buffer.
 
 Mientras corre el entrenamiento se puede refrescar cada 30 segundos:
 

@@ -66,6 +66,7 @@ from modules.demand_simulator import DemandNoiseGenerator
 
 noise_generator = DemandNoiseGenerator(
     k=0.30,
+    k_exponential_lambda=10.0,
     max_daily_peaks=4,
     max_hourly_peaks=2,
     seed=42,
@@ -81,6 +82,10 @@ Campos principales de `noise_result`:
 - `demand_propensity`: propension relativa de demanda.
 - `k_effective`: descuento efectivo aplicado.
 - `discount_total`: total descontado.
+
+`k_effective` se samplea directamente en `[0, k]` desde una exponencial
+truncada. `k_exponential_lambda` controla la concentracion cerca de cero; el
+default `10.0` favorece descuentos efectivos bajos.
 
 Garantias:
 

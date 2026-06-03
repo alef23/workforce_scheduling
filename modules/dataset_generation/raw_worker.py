@@ -75,7 +75,7 @@ class NoiseGenerationConfig:
     sigma_alpha_max: float = 3.0
     sigma_u: float = 0.1
     epsilon: float = 1e-9
-    chi_square_c: float = 4.0
+    k_exponential_lambda: float = 10.0
     q_baseline: float = 0.0
     capacity_gamma: float = 0.5
     min_capacity_factor: float = 0.30
@@ -104,8 +104,8 @@ class NoiseGenerationConfig:
             raise ValueError("sigma_u debe ser >= 0.")
         if self.epsilon <= 0:
             raise ValueError("epsilon debe ser positivo.")
-        if self.chi_square_c <= 0:
-            raise ValueError("chi_square_c debe ser positivo.")
+        if self.k_exponential_lambda <= 0:
+            raise ValueError("k_exponential_lambda debe ser positivo.")
         if self.q_baseline < 0:
             raise ValueError("q_baseline debe ser >= 0.")
         if self.capacity_gamma <= 0:
@@ -230,7 +230,7 @@ class RawDemandTrajectoryWorker:
             ),
             sigma_u=float(config.sigma_u),
             epsilon=float(config.epsilon),
-            chi_square_c=float(config.chi_square_c),
+            k_exponential_lambda=float(config.k_exponential_lambda),
             q_baseline=float(config.q_baseline),
             capacity_gamma=float(config.capacity_gamma),
             min_capacity_factor=float(config.min_capacity_factor),

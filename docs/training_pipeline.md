@@ -34,6 +34,7 @@ El entrenamiento se organiza por ciclos:
 ```text
 scripts/
 +-- generate_raw_demand_dataset.py
++-- generate_initial_state_test_set.py
 +-- generate_stock_adjusted_dataset.py
 +-- generate_mcts_samples.py
 
@@ -136,6 +137,8 @@ datasets/
 |       +-- trajectories.zarr
 +-- samples/
 |   +-- samples.zarr
++-- test/
+|   +-- initial_states.zarr
 +-- reports/
 ```
 
@@ -254,6 +257,16 @@ policy_loss_i = -sum(policy_target * log_softmax(policy_logits))
 policy_loss   = mean(policy_loss_i * policy_weight_i)
 ```
 
+El test set fijo de estados iniciales tambien usa formato `SampleBuffer`, pero
+guarda solo un sample por problema. Ese buffer vive separado del entrenamiento,
+por defecto en:
+
+```text
+datasets/test/initial_states.zarr
+```
+
+No se mezcla con `datasets/samples/samples.zarr`.
+
 ## Checklist operativo
 
 ### Paso 1. Generar trayectorias raw con ruido
@@ -270,6 +283,7 @@ uv run python scripts/generate_raw_demand_dataset.py 100 \
   --closing-hour 22 \
   --max-overcoverage-tolerance 0.1 \
   --noise-k-max 0.8 \
+  --noise-k-lambda 10.0 \
   --mod-4-max 20 \
   --mod-6-max 20 \
   --mod-8-max 20
@@ -291,6 +305,11 @@ Que genera:
 - `reward` final propagado en la trayectoria;
 - metadata de seeds, stock inicial, ruido y reward final.
 
+El ruido descuenta una parte de la cobertura factible. Para cada trayectoria se
+samplea `noise_k_effective` directamente en `[0, noise_k_max]` desde una
+exponencial truncada con `noise_k_lambda` por defecto `10.0`, lo que concentra
+mas probabilidad cerca de `0`.
+
 Validacion rapida:
 
 ```bash
@@ -301,6 +320,37 @@ find datasets/raw/trajectories.zarr/trajectories \
   -name 'raw_*' \
   | wc -l
 ```
+
+### Paso 1b. Generar test set fijo de estados iniciales
+
+Este paso es opcional, pero recomendado para evaluar checkpoints contra siempre
+el mismo conjunto de problemas. Genera trayectorias raw internamente para conocer
+el reward final, pero guarda solo el estado inicial como `SampleBuffer`.
+
+```bash
+uv run python scripts/generate_initial_state_test_set.py 100 \
+  --output-path datasets/test/initial_states.zarr \
+  --workers 4 \
+  --overwrite \
+  --seed 12345 \
+  --allowed-entry-hours 6 12 18 \
+  --closing-hour 22 \
+  --max-overcoverage-tolerance 0.1 \
+  --noise-k-max 0.8 \
+  --noise-k-lambda 10.0 \
+  --mod-4-max 20 \
+  --mod-6-max 20 \
+  --mod-8-max 20
+```
+
+Formato:
+
+- un sample por problema;
+- `step_index = 0`;
+- `sample_source = test_initial_raw`;
+- `value = final_reward` de la trayectoria completa;
+- `policy` y `action_id` del estado inicial;
+- campos `X` y setup compatibles con `SampleBuffer`.
 
 ### Paso 2. Generar trayectorias stock_adjusted y muestras con expansion_mode
 
@@ -542,6 +592,7 @@ Salida por defecto:
 
 ```text
 datasets/reports/training_dashboard.html
+datasets/reports/trajectory_explorer.html
 ```
 
 Durante una corrida larga se puede regenerar periodicamente y refrescar el
@@ -551,9 +602,12 @@ navegador:
 watch -n 30 'uv run python scripts/build_training_dashboard.py'
 ```
 
-El visor muestra corridas, ciclos, losses del learner, checkpoints, conteos de
-MCTS vs reweighted, resumen de buffers Zarr y un preview de trayectorias y
-samples. Es una foto del estado actual; no escribe ni modifica buffers.
+El dashboard principal muestra corridas, ciclos, losses del learner,
+checkpoints, conteos de MCTS vs reweighted, resumen de buffers Zarr y analisis
+agregado de distribuciones. El explorador de trayectorias vive en
+`trajectory_explorer.html` y permite navegar estado por estado las ultimas
+trayectorias cargadas. Ambos son una foto del estado actual; no escriben ni
+modifican buffers.
 
 ### Paso 6. Escalar la corrida
 
@@ -611,6 +665,7 @@ Ver ayuda de scripts:
 
 ```bash
 uv run python scripts/generate_raw_demand_dataset.py --help
+uv run python scripts/generate_initial_state_test_set.py --help
 uv run python scripts/generate_stock_adjusted_dataset.py --help
 uv run python scripts/generate_mcts_samples.py --help
 ```
@@ -619,7 +674,7 @@ uv run python scripts/generate_mcts_samples.py --help
 
 ```bash
 .venv/bin/python -m compileall scripts modules
-.venv/bin/python -m pytest tests/test_mcts_generation_helpers.py tests/test_mcts_generation_worker.py tests/test_resnet_sample_learner.py -q
+.venv/bin/python -m pytest tests/test_demand_noise.py tests/test_initial_state_test_set.py tests/test_mcts_generation_helpers.py tests/test_mcts_generation_worker.py tests/test_resnet_sample_learner.py -q
 ```
 
 El test de orquestador usa Zarr real y, si el sandbox cuelga al abrir buffers,

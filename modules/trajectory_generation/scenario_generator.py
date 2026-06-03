@@ -47,7 +47,7 @@ class ScenarioGenerationConfig:
 
     sigma_u: float = 0.1
     epsilon: float = 1e-9
-    chi_square_c: float = 4.0
+    k_exponential_lambda: float = 10.0
     q_baseline: float = 0.0
 
     seed: Optional[int] = None
@@ -121,7 +121,7 @@ def _build_noise_generator(
         ),
         sigma_u=config.sigma_u,
         epsilon=config.epsilon,
-        chi_square_c=config.chi_square_c,
+        k_exponential_lambda=config.k_exponential_lambda,
         q_baseline=config.q_baseline,
     )
 

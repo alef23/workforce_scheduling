@@ -84,6 +84,12 @@ def parse_args() -> argparse.Namespace:
         help="K maximo del generador de ruido. Default: 0.8.",
     )
     parser.add_argument(
+        "--noise-k-lambda",
+        type=float,
+        default=10.0,
+        help="Lambda de la exponencial truncada para samplear k. Default: 10.0.",
+    )
+    parser.add_argument(
         "--mod-4-max",
         type=int,
         default=20,
@@ -121,6 +127,7 @@ def main() -> None:
         ),
         noise_config=NoiseGenerationConfig(
             k_max=args.noise_k_max,
+            k_exponential_lambda=args.noise_k_lambda,
         ),
         trajectory_id_prefix="raw",
     )

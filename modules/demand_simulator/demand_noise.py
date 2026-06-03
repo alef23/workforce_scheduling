@@ -60,7 +60,7 @@ class DemandNoiseGenerator:
         sigma_alpha: float = 0.50,
         sigma_u: float = 0.15,
         epsilon: float = 1e-9,
-        chi_square_c: float = 4.0,
+        k_exponential_lambda: float = 10.0,
         q_baseline: float = 0.3,
         capacity_gamma: float = 0.5,
         min_capacity_factor: float = 0.30,
@@ -75,7 +75,7 @@ class DemandNoiseGenerator:
         self.sigma_u = sigma_u
 
         self.epsilon = epsilon
-        self.chi_square_c = chi_square_c
+        self.k_exponential_lambda = k_exponential_lambda
         self.q_baseline = q_baseline
         self.capacity_gamma = capacity_gamma
         self.min_capacity_factor = min_capacity_factor
@@ -197,8 +197,11 @@ class DemandNoiseGenerator:
         if not isinstance(self.epsilon, (int, float)) or self.epsilon <= 0:
             raise ValueError("epsilon debe ser un número positivo.")
 
-        if not isinstance(self.chi_square_c, (int, float)) or self.chi_square_c <= 0:
-            raise ValueError("chi_square_c debe ser un número positivo.")
+        if (
+            not isinstance(self.k_exponential_lambda, (int, float))
+            or self.k_exponential_lambda <= 0
+        ):
+            raise ValueError("k_exponential_lambda debe ser un número positivo.")
 
         if not isinstance(self.q_baseline, (int, float)) or self.q_baseline < 0:
             raise ValueError("q_baseline debe ser un número mayor o igual a 0.")
@@ -316,19 +319,23 @@ class DemandNoiseGenerator:
 
     def _sample_k_effective(self) -> float:
         """
-        Genera k' en [0, k) usando una chi-cuadrado con 2 grados de libertad.
+        Genera k' en [0, k] desde una exponencial truncada.
 
-        X ~ ChiSquare(df=2)
+        K ~ Exponential(lambda), condicionada a 0 <= K <= k.
 
-        k' = k * X / (X + c)
+        Se usa inverse CDF:
+
+        k' = -log(1 - u * (1 - exp(-lambda * k))) / lambda
         """
 
         if self.k == 0:
             return 0.0
 
-        x = self.rng.chisquare(df=2)
+        lambda_ = float(self.k_exponential_lambda)
+        u = float(self.rng.uniform(0.0, 1.0))
+        normalizer = 1.0 - np.exp(-lambda_ * self.k)
 
-        k_effective = self.k * x / (x + self.chi_square_c)
+        k_effective = -np.log(1.0 - u * normalizer) / lambda_
 
         return float(k_effective)
 
@@ -710,7 +717,7 @@ if __name__ == "__main__":
         sigma_alpha=0.50,
         sigma_u=0.15,
         epsilon=1e-9,
-        chi_square_c=4.0,
+        k_exponential_lambda=10.0,
         seed=42,
     )
 
