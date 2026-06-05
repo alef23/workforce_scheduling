@@ -250,7 +250,7 @@ datasets/evaluation/mcts_test/
 ```
 
 `runs.jsonl` mantiene el historial de corridas para que
-`build_training_dashboard.py` grafique la evolucion de positivos sobre total y
+`build_model_dashboard.py` grafique la evolucion de positivos sobre total y
 el resto de metricas del test set.
 
 El script guarda incrementalmente cada trayectoria y su fila JSONL apenas
@@ -316,33 +316,35 @@ Para desactivar estos logs:
 uv run python scripts/generate_mcts_samples.py --disable-report-logging ...
 ```
 
-Dashboard HTML:
+Dashboards HTML:
 
-`build_training_dashboard.py` construye un visor estatico desde los logs JSONL,
-checkpoints y buffers Zarr existentes. No modifica los modulos ni escribe en los
-buffers.
-
-```bash
-uv run python scripts/build_training_dashboard.py
-```
-
-Por defecto genera:
-
-```text
-datasets/reports/training_dashboard.html
-datasets/reports/trajectory_explorer.html
-```
-
-`training_dashboard.html` contiene monitoreo y analisis agregado de
-distribuciones. `trajectory_explorer.html` contiene el explorador estado por
-estado de las ultimas trayectorias seleccionadas de cada buffer.
-
-Mientras corre el entrenamiento se puede refrescar cada 30 segundos:
+`build_model_dashboard.py` construye el visor liviano del modelo desde logs
+JSONL, reportes de evaluación y checkpoints. No abre buffers Zarr.
 
 ```bash
-watch -n 30 'uv run python scripts/build_training_dashboard.py'
+uv run python scripts/build_model_dashboard.py
 ```
 
+Durante el entrenamiento puede refrescarse cada 30 segundos:
+
+```bash
+watch -n 30 'uv run python scripts/build_model_dashboard.py'
+```
+
+`build_zarr_dashboard.py` construye el resumen de buffers y el explorador estado
+por estado:
+
+```bash
+uv run python scripts/build_zarr_dashboard.py
+```
+
+Generan `datasets/reports/model_dashboard.html` y
+`datasets/reports/zarr_dashboard.html`, respectivamente. El segundo comando
+realiza lecturas intensivas de Zarr y puede competir por I/O con el
+entrenamiento.
+
+`build_training_dashboard.py` se conserva como comando legado para generar
+ambos en una sola ejecución.
 Salida por defecto:
 
 ```text

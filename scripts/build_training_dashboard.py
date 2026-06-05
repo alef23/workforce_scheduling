@@ -20,7 +20,9 @@ if str(PROJECT_ROOT) not in sys.path:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Construye un dashboard HTML estatico desde logs y buffers."
+        description=(
+            "Comando legado: construye los dashboards del modelo y de buffers Zarr."
+        )
     )
     parser.add_argument(
         "--reports-dir",
@@ -60,12 +62,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output",
         default=None,
-        help="HTML destino. Default: <reports-dir>/training_dashboard.html.",
+        help="Dashboard del modelo. Default: <reports-dir>/model_dashboard.html.",
     )
     parser.add_argument(
         "--explorer-output",
         default=None,
-        help="HTML destino del explorador. Default: <reports-dir>/trajectory_explorer.html.",
+        help="Dashboard Zarr. Default: <reports-dir>/zarr_dashboard.html.",
     )
     parser.add_argument(
         "--max-sample-scan",
@@ -91,11 +93,11 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     reports_dir = Path(args.reports_dir)
-    output_path = Path(args.output) if args.output else reports_dir / "training_dashboard.html"
+    output_path = Path(args.output) if args.output else reports_dir / "model_dashboard.html"
     explorer_output_path = (
         Path(args.explorer_output)
         if args.explorer_output
-        else reports_dir / "trajectory_explorer.html"
+        else reports_dir / "zarr_dashboard.html"
     )
 
     data = {
@@ -861,6 +863,428 @@ def build_derived_summary(data: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def shared_dashboard_css() -> str:
+    return """
+    :root {
+      color-scheme: light;
+      --control-bg: #ffffff;
+      --chart-bg: #ffffff;
+      --soft-bg: #f2f4f7;
+      --hover-bg: #f8fafc;
+      --shadow: 0 8px 24px rgba(16, 24, 40, .08);
+    }
+    :root[data-theme="dark"] {
+      color-scheme: dark;
+      --bg: #111418;
+      --panel: #191d23;
+      --text: #edf1f5;
+      --muted: #aab4c0;
+      --line: #343b45;
+      --accent: #4cc9b0;
+      --accent-2: #f5a65b;
+      --accent-3: #9fb0c3;
+      --danger: #ff7b72;
+      --control-bg: #222831;
+      --chart-bg: #161a20;
+      --soft-bg: #222831;
+      --hover-bg: #252c35;
+      --shadow: 0 10px 28px rgba(0, 0, 0, .3);
+    }
+    body, header, .panel, .card, .chart, select, button, a.button,
+    .heatmap-wrap, pre, .policy-bar {
+      transition: background-color .18s ease, border-color .18s ease, color .18s ease;
+    }
+    select, button, a.button { background: var(--control-bg) !important; }
+    .chart, .heatmap-wrap { background: var(--chart-bg) !important; }
+    pre { background: var(--soft-bg) !important; }
+    tbody tr:hover { background: var(--hover-bg); }
+    .header-row {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 16px;
+    }
+    .icon-button {
+      width: 38px;
+      height: 38px;
+      padding: 0;
+      display: inline-grid;
+      place-items: center;
+      cursor: pointer;
+      font-size: 18px;
+    }
+    .snapshot-age.fresh { color: var(--accent); }
+    .snapshot-age.stale { color: var(--accent-2); font-weight: 700; }
+    .chart-shell { position: relative; }
+    .chart-toolbar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      padding: 8px 10px;
+      border-bottom: 1px solid var(--line);
+      background: var(--soft-bg);
+    }
+    .chart-toolbar button {
+      padding: 4px 8px;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    .chart-toolbar button.inactive { opacity: .42; }
+    .range-control {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .range-control input {
+      width: 72px;
+      padding: 4px 6px;
+      border: 1px solid var(--line);
+      border-radius: 5px;
+      color: var(--text);
+      background: var(--control-bg);
+    }
+    .chart-tooltip {
+      position: absolute;
+      display: none;
+      pointer-events: none;
+      z-index: 5;
+      min-width: 150px;
+      max-width: 280px;
+      padding: 8px 10px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--panel);
+      color: var(--text);
+      box-shadow: var(--shadow);
+      font-size: 12px;
+    }
+    .chart-tooltip strong { display: block; margin-bottom: 4px; }
+    .chart svg text { fill: var(--muted); }
+    .chart svg .axis { stroke: var(--line); }
+    .table-tools {
+      display: flex;
+      justify-content: flex-end;
+      margin: 0 0 8px;
+    }
+    .table-search {
+      width: min(260px, 100%);
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 7px 9px;
+      color: var(--text);
+      background: var(--control-bg);
+    }
+    .table-wrap { overflow: auto; }
+    th[data-sort] { cursor: pointer; user-select: none; }
+    th[data-sort]::after { content: " ↕"; opacity: .45; }
+    th[data-direction="asc"]::after { content: " ↑"; opacity: 1; }
+    th[data-direction="desc"]::after { content: " ↓"; opacity: 1; }
+    .metric-note { color: var(--muted); font-size: 12px; margin-top: 3px; }
+    .compare-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+      margin-bottom: 12px;
+    }
+    .playback-controls { display: flex; gap: 8px; align-items: center; }
+    .delta-positive { color: var(--accent); font-weight: 700; }
+    .delta-negative { color: var(--danger); font-weight: 700; }
+    .policy-row.illegal { opacity: .55; }
+    :root[data-theme="dark"] .heatmap-table th,
+    :root[data-theme="dark"] .heatmap-table td:first-child {
+      background: var(--soft-bg);
+    }
+    @media (max-width: 700px) {
+      .header-row { align-items: center; }
+      .compare-grid { grid-template-columns: 1fr; }
+      .range-control input { width: 60px; }
+    }
+    """
+
+
+def shared_dashboard_javascript() -> str:
+    return r"""
+    const CHART_STATE = {};
+
+    function escapeHtml(value) {
+      return String(value ?? '')
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;');
+    }
+
+    function setupTheme() {
+      const stored = localStorage.getItem('workforce-dashboard-theme');
+      const preferred = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      const theme = stored || preferred;
+      document.documentElement.dataset.theme = theme;
+      const button = document.getElementById('themeToggle');
+      const refresh = () => {
+        const dark = document.documentElement.dataset.theme === 'dark';
+        button.textContent = dark ? '☀' : '☾';
+        button.title = dark ? 'Usar tema claro' : 'Usar tema oscuro';
+        button.setAttribute('aria-label', button.title);
+      };
+      button.addEventListener('click', () => {
+        const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+        document.documentElement.dataset.theme = next;
+        localStorage.setItem('workforce-dashboard-theme', next);
+        refresh();
+      });
+      refresh();
+    }
+
+    function renderSnapshotAge() {
+      const target = document.getElementById('snapshotAge');
+      if (!target) return;
+      const generated = new Date(DATA.generated_at);
+      const minutes = Math.max(0, Math.floor((Date.now() - generated.getTime()) / 60000));
+      target.textContent = minutes < 1 ? 'actualizado hace menos de 1 minuto' : `actualizado hace ${minutes} min`;
+      target.className = `snapshot-age ${minutes > 10 ? 'stale' : 'fresh'}`;
+    }
+
+    function installTableInteractions() {
+      document.addEventListener('input', event => {
+        if (!event.target.matches('.table-search')) return;
+        const wrapper = event.target.closest('.interactive-table');
+        const query = event.target.value.trim().toLowerCase();
+        wrapper.querySelectorAll('tbody tr').forEach(row => {
+          row.hidden = query && !row.textContent.toLowerCase().includes(query);
+        });
+      });
+      document.addEventListener('click', event => {
+        const header = event.target.closest('th[data-sort]');
+        if (!header) return;
+        const tableElement = header.closest('table');
+        const index = Number(header.dataset.sort);
+        const direction = header.dataset.direction === 'asc' ? 'desc' : 'asc';
+        tableElement.querySelectorAll('th[data-sort]').forEach(item => delete item.dataset.direction);
+        header.dataset.direction = direction;
+        const body = tableElement.tBodies[0];
+        const rows = [...body.rows];
+        rows.sort((a, b) => {
+          const left = a.cells[index]?.textContent.trim() || '';
+          const right = b.cells[index]?.textContent.trim() || '';
+          const leftNumber = Number(left.replaceAll(',', ''));
+          const rightNumber = Number(right.replaceAll(',', ''));
+          const result = Number.isFinite(leftNumber) && Number.isFinite(rightNumber)
+            ? leftNumber - rightNumber
+            : left.localeCompare(right, undefined, {numeric: true});
+          return direction === 'asc' ? result : -result;
+        });
+        rows.forEach(row => body.appendChild(row));
+      });
+    }
+
+    table = function(rows, columns) {
+      if (!rows.length) return '<p class="subtle">Sin datos.</p>';
+      const header = columns.map((column, index) =>
+        `<th data-sort="${index}">${column.label}</th>`
+      ).join('');
+      const body = rows.map(row =>
+        `<tr>${columns.map(column =>
+          `<td>${column.render ? column.render(row) : fmt(row[column.key])}</td>`
+        ).join('')}</tr>`
+      ).join('');
+      return `<div class="interactive-table">
+        <div class="table-tools"><input class="table-search" type="search" placeholder="Filtrar tabla…"></div>
+        <div class="table-wrap"><table><thead><tr>${header}</tr></thead><tbody>${body}</tbody></table></div>
+      </div>`;
+    };
+
+    function chartValue(row, key) {
+      return row.metric?.[key] ?? row[key];
+    }
+
+    function formatDuration(seconds) {
+      if (!Number.isFinite(seconds)) return '-';
+      if (Math.abs(seconds) >= 300) return `${fmt(seconds / 60, 1)} min`;
+      return `${fmt(seconds, 1)} s`;
+    }
+
+    function formatSeriesValue(series, value) {
+      if (!Number.isFinite(value)) return '-';
+      if (series.format === 'duration') return formatDuration(value);
+      if (series.format === 'percent') return `${fmt(value, 1)}%`;
+      return fmt(value);
+    }
+
+    lineChart = function(containerId, rows, series) {
+      const el = document.getElementById(containerId);
+      if (!rows.length) {
+        el.innerHTML = '<div class="subtle" style="padding:14px">Sin datos.</div>';
+        return;
+      }
+      const state = CHART_STATE[containerId] || {
+        active: new Set(series.map(item => item.key)),
+        start: 0,
+        end: rows.length - 1,
+      };
+      state.end = Math.min(state.end, rows.length - 1);
+      CHART_STATE[containerId] = state;
+      const activeSeries = series.filter(item => state.active.has(item.key));
+      const visibleRows = rows.slice(state.start, state.end + 1);
+      const width = 900, height = 250, pad = 42;
+      const values = visibleRows.flatMap(row =>
+        activeSeries.map(item => chartValue(row, item.key)).filter(Number.isFinite)
+      );
+      const minY = values.length ? Math.min(...values) : 0;
+      const maxY = values.length ? Math.max(...values) : 1;
+      const spanY = maxY - minY || 1;
+      const x = index => pad + (index / Math.max(1, visibleRows.length - 1)) * (width - 2 * pad);
+      const y = value => height - pad - ((value - minY) / spanY) * (height - 2 * pad);
+      const groups = new Map();
+      visibleRows.forEach((row, index) => {
+        const key = row.run_id || 'run';
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push([row, index]);
+      });
+      const paths = activeSeries.flatMap(item =>
+        [...groups.values()].map(group => {
+          const points = group
+            .filter(([row]) => Number.isFinite(chartValue(row, item.key)))
+            .map(([row, index]) => `${x(index)},${y(chartValue(row, item.key))}`)
+            .join(' ');
+          return points ? `<polyline points="${points}" fill="none" stroke="${item.color}" stroke-width="2.5"/>` : '';
+        })
+      ).join('');
+      const cycleSeparators = visibleRows.map((row, index) => {
+        if (index === 0 || !row.cycle_id) return '';
+        const previous = visibleRows[index - 1];
+        if (previous?.cycle_id === row.cycle_id) return '';
+        const separatorX = x(index);
+        const cycleIndex = row.cycle_index ?? row.cycle?.cycle_index;
+        return `<g>
+          <line x1="${separatorX}" y1="${pad}" x2="${separatorX}" y2="${height-pad}"
+            stroke="var(--line)" stroke-width="1" stroke-dasharray="4 4"/>
+          <text x="${separatorX + 4}" y="${pad + 12}" font-size="10">c${cycleIndex ?? ''}</text>
+        </g>`;
+      }).join('');
+      const controls = series.map(item =>
+        `<button type="button" data-series="${item.key}" class="${state.active.has(item.key) ? '' : 'inactive'}" style="color:${item.color}">${item.label}</button>`
+      ).join('');
+      el.innerHTML = `<div class="chart-shell">
+        <div class="chart-toolbar">${controls}
+          <label class="range-control">Desde
+            <input data-range="start" type="number" min="1" max="${rows.length}" value="${state.start + 1}">
+          </label>
+          <label class="range-control">Hasta
+            <input data-range="end" type="number" min="1" max="${rows.length}" value="${state.end + 1}">
+          </label>
+          <span class="subtle">de ${rows.length} puntos</span>
+          <button type="button" data-reset>Ver todo</button>
+        </div>
+        <svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none">
+          <line class="axis" x1="${pad}" y1="${height-pad}" x2="${width-pad}" y2="${height-pad}"/>
+          <line class="axis" x1="${pad}" y1="${pad}" x2="${pad}" y2="${height-pad}"/>
+          <text x="4" y="${pad}">${formatSeriesValue(activeSeries[0] || {}, maxY)}</text>
+          <text x="4" y="${height-pad}">${formatSeriesValue(activeSeries[0] || {}, minY)}</text>
+          ${cycleSeparators}
+          ${paths}
+          <line class="chart-cursor axis" x1="${pad}" y1="${pad}" x2="${pad}" y2="${height-pad}" style="display:none"/>
+        </svg>
+        <div class="chart-tooltip"></div>
+      </div>`;
+      el.querySelectorAll('[data-series]').forEach(button => button.addEventListener('click', () => {
+        const key = button.dataset.series;
+        state.active.has(key) ? state.active.delete(key) : state.active.add(key);
+        if (!state.active.size) state.active.add(key);
+        lineChart(containerId, rows, series);
+      }));
+      el.querySelectorAll('[data-range]').forEach(input => input.addEventListener('change', () => {
+        const rawStart = Number(el.querySelector('[data-range="start"]').value);
+        const rawEnd = Number(el.querySelector('[data-range="end"]').value);
+        const start = Math.max(0, (Number.isFinite(rawStart) ? rawStart : 1) - 1);
+        const end = Math.min(rows.length - 1, (Number.isFinite(rawEnd) ? rawEnd : rows.length) - 1);
+        state.start = Math.min(start, end);
+        state.end = Math.max(start, end);
+        lineChart(containerId, rows, series);
+      }));
+      el.querySelector('[data-reset]').addEventListener('click', () => {
+        state.start = 0;
+        state.end = rows.length - 1;
+        lineChart(containerId, rows, series);
+      });
+      const svg = el.querySelector('svg');
+      const tooltip = el.querySelector('.chart-tooltip');
+      const cursor = el.querySelector('.chart-cursor');
+      svg.addEventListener('mousemove', event => {
+        const rect = svg.getBoundingClientRect();
+        const ratio = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
+        const index = Math.round(ratio * Math.max(0, visibleRows.length - 1));
+        const row = visibleRows[index];
+        cursor.style.display = '';
+        const cursorX = x(index);
+        cursor.setAttribute('x1', cursorX);
+        cursor.setAttribute('x2', cursorX);
+        const title = row.cycle_id || row.run_id || `punto ${state.start + index + 1}`;
+        tooltip.innerHTML = `<strong>${escapeHtml(title)}</strong>` +
+          activeSeries.map(item =>
+            `${escapeHtml(item.label)}: ${formatSeriesValue(item, chartValue(row, item.key))}`
+          ).join('<br>');
+        tooltip.style.display = 'block';
+        tooltip.style.left = `${Math.min(rect.width - 210, Math.max(8, event.clientX - rect.left + 12))}px`;
+        tooltip.style.top = `${Math.max(8, event.clientY - rect.top - 18)}px`;
+      });
+      svg.addEventListener('mouseleave', () => {
+        tooltip.style.display = 'none';
+        cursor.style.display = 'none';
+      });
+    };
+
+    barChart = function(containerId, rows) {
+      const el = document.getElementById(containerId);
+      if (!rows.length) {
+        el.innerHTML = '<div class="subtle" style="padding:14px">Sin datos.</div>';
+        return;
+      }
+      const width = 900, height = 250, pad = 42;
+      const maxValue = Math.max(...rows.map(row => row.cycle?.saved_samples || 0), 1);
+      const barWidth = (width - 2 * pad) / rows.length;
+      const bars = rows.map((row, index) => {
+        const value = row.cycle?.saved_samples || 0;
+        const barHeight = value / maxValue * (height - 2 * pad);
+        return `<rect data-index="${index}" x="${pad + index * barWidth + 2}" y="${height-pad-barHeight}"
+          width="${Math.max(2, barWidth - 4)}" height="${barHeight}" fill="var(--accent)"/>`;
+      }).join('');
+      el.innerHTML = `<div class="chart-shell">
+        <svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none">
+          <line class="axis" x1="${pad}" y1="${height-pad}" x2="${width-pad}" y2="${height-pad}"/>
+          <line class="axis" x1="${pad}" y1="${pad}" x2="${pad}" y2="${height-pad}"/>
+          <text x="4" y="${pad}">${fmt(maxValue)}</text>${bars}
+        </svg>
+        <div class="chart-tooltip"></div>
+      </div>`;
+      const tooltip = el.querySelector('.chart-tooltip');
+      el.querySelectorAll('rect[data-index]').forEach(rect => {
+        rect.addEventListener('mousemove', event => {
+          const row = rows[Number(rect.dataset.index)];
+          tooltip.innerHTML = `<strong>${escapeHtml(row.cycle_id || row.run_id)}</strong>` +
+            `ciclo: ${fmt(row.cycle?.cycle_index)}<br>` +
+            `samples: ${fmt(row.cycle?.saved_samples)}<br>` +
+            `MCTS: ${fmt(row.cycle?.used_mcts_jobs)}<br>` +
+            `reweighted: ${fmt(row.cycle?.reweighted_jobs)}`;
+          tooltip.style.display = 'block';
+          tooltip.style.left = `${event.offsetX + 12}px`;
+          tooltip.style.top = `${Math.max(8, event.offsetY - 18)}px`;
+        });
+        rect.addEventListener('mouseleave', () => tooltip.style.display = 'none');
+      });
+    };
+
+    function initSharedDashboard() {
+      setupTheme();
+      renderSnapshotAge();
+      installTableInteractions();
+      window.setInterval(renderSnapshotAge, 60000);
+    }
+    """
+
+
 def read_array(group, name: str, indices: np.ndarray, dtype):
     if name not in group:
         return np.asarray([], dtype=dtype)
@@ -1135,17 +1559,25 @@ def render_overview_dashboard(data: dict[str, Any]) -> str:
       header, main {{ padding-left: 14px; padding-right: 14px; }}
       .grid {{ grid-template-columns: 1fr; }}
     }}
+    {shared_dashboard_css()}
   </style>
 </head>
 <body>
   <header>
-    <h1>Workforce Training Dashboard</h1>
-    <div class="subtle">Snapshot generado: <span id="generatedAt"></span></div>
+    <div class="header-row">
+      <div>
+        <h1>Workforce Training Dashboard</h1>
+        <div class="subtle">
+          Snapshot generado: <span id="generatedAt"></span> · <span id="snapshotAge"></span>
+        </div>
+      </div>
+      <button class="icon-button" id="themeToggle" type="button"></button>
+    </div>
     <div class="toolbar">
       <label>Run <select id="runSelect"></select></label>
       <button id="showAll">Mostrar todo</button>
-      <a class="button" href="trajectory_explorer.html">Abrir explorador</a>
-      <span class="subtle">Para actualizar, volver a ejecutar <code>scripts/build_training_dashboard.py</code>.</span>
+      <a class="button" href="zarr_dashboard.html">Abrir dashboard Zarr</a>
+      <span class="subtle">Para actualizar, volver a ejecutar <code>scripts/build_model_dashboard.py</code>.</span>
     </div>
   </header>
   <main>
@@ -1159,6 +1591,17 @@ def render_overview_dashboard(data: dict[str, Any]) -> str:
       <div class="panel">
         <h2>Samples por ciclo</h2>
         <div class="chart" id="cycleChart"></div>
+      </div>
+    </section>
+
+    <section class="two-col">
+      <div class="panel">
+        <h2>Rendimiento por ciclo</h2>
+        <div class="chart" id="throughputChart"></div>
+      </div>
+      <div class="panel">
+        <h2>Composicion de jobs</h2>
+        <div class="chart" id="jobMixChart"></div>
       </div>
     </section>
 
@@ -1179,33 +1622,8 @@ def render_overview_dashboard(data: dict[str, Any]) -> str:
     </section>
 
     <section class="panel">
-      <h2>Analisis de trayectorias</h2>
-      <div class="two-col">
-        <div>
-          <h3>Raw</h3>
-          <div id="rawAnalysis"></div>
-        </div>
-        <div>
-          <h3>Stock</h3>
-          <div id="stockAnalysis"></div>
-        </div>
-      </div>
-    </section>
-
-    <section class="panel">
-      <h2>Analisis de samples</h2>
-      <div id="sampleAnalysis"></div>
-    </section>
-
-    <section class="two-col">
-      <div class="panel">
-        <h2>Buffers Zarr</h2>
-        <div id="buffers"></div>
-      </div>
-      <div class="panel">
-        <h2>Checkpoints</h2>
-        <div id="checkpoints"></div>
-      </div>
+      <h2>Checkpoints</h2>
+      <div id="checkpoints"></div>
     </section>
   </main>
   <script id="dashboard-data" type="application/json">{encoded}</script>
@@ -1500,6 +1918,15 @@ def render_overview_dashboard(data: dict[str, Any]) -> str:
         ['Value error medio', latest?.mean_value_error],
         ['Trayectorias log', evaluation.trajectory_count],
       ];
+      const evaluatedTrajectories = evaluation.trajectories || [];
+      const betterCount = evaluatedTrajectories.filter(row => Number(row.value_error) > 0).length;
+      const equalCount = evaluatedTrajectories.filter(row => Number(row.value_error) === 0).length;
+      const worseCount = evaluatedTrajectories.filter(row => Number(row.value_error) < 0).length;
+      cards.push(
+        ['Mejores', betterCount],
+        ['Iguales', equalCount],
+        ['Peores', worseCount],
+      );
 
       const runTable = table(runs.slice().reverse(), [
         {{label: 'Run', render: r => `<span class="pill">${{r.run_id}}</span>`}},
@@ -1512,7 +1939,7 @@ def render_overview_dashboard(data: dict[str, Any]) -> str:
         {{label: 'Mejor rate', render: r => fmt(r.better_than_original_rate)}},
         {{label: 'Reward medio', render: r => fmt(r.mean_final_reward)}},
         {{label: 'Value error', render: r => fmt(r.mean_value_error)}},
-        {{label: 'Segundos', render: r => fmt(r.elapsed_seconds)}},
+        {{label: 'Tiempo', render: r => formatDuration(Number(r.elapsed_seconds))}},
       ]);
 
       const trajectories = (evaluation.trajectories || []).slice(-40).reverse();
@@ -1526,7 +1953,7 @@ def render_overview_dashboard(data: dict[str, Any]) -> str:
         {{label: 'Error', render: r => fmt(r.value_error)}},
         {{label: 'Positivo', render: r => r.is_positive ? 'si' : 'no'}},
         {{label: 'Mejor', render: r => r.is_better_than_original ? 'si' : 'no'}},
-        {{label: 'Segundos', render: r => fmt(r.elapsed_seconds)}},
+        {{label: 'Tiempo', render: r => formatDuration(Number(r.elapsed_seconds))}},
       ]);
 
       document.getElementById('testEval').innerHTML = `
@@ -1566,13 +1993,35 @@ def render_overview_dashboard(data: dict[str, Any]) -> str:
       const steps = rowsForRun(DATA.logs.learner_steps);
       const latestStep = steps[steps.length - 1]?.metric;
       const savedSamples = runs.reduce((acc, row) => acc + (row.report?.saved_samples || 0), 0);
+      const mctsJobs = runs.reduce((acc, row) => acc + (row.report?.used_mcts_jobs || 0), 0);
+      const reweightedJobs = runs.reduce((acc, row) => acc + (row.report?.reweighted_jobs || 0), 0);
+      const totalClassifiedJobs = mctsJobs + reweightedJobs;
+      const actualMctsRate = totalClassifiedJobs ? mctsJobs / totalClassifiedJobs : null;
+      const configuredMctsRate = runs.length
+        ? runs.reduce((acc, row) => acc + Number(row.args?.p_mcts || 0), 0) / runs.length
+        : null;
+      const cycleDurations = cycles.slice(1).map((cycle, index) => {{
+        const previous = cycles[index];
+        if (cycle.run_id !== previous.run_id) return null;
+        return (new Date(cycle.created_at) - new Date(previous.created_at)) / 1000;
+      }}).filter(value => Number.isFinite(value) && value > 0);
+      const latestDuration = cycleDurations[cycleDurations.length - 1];
+      const latestCycleSamples = cycles[cycles.length - 1]?.cycle?.saved_samples;
+      const latestSamplesPerSecond = latestDuration && latestCycleSamples
+        ? latestCycleSamples / latestDuration
+        : null;
       const cards = [
         ['Runs', runs.length],
         ['Ciclos', cycles.length],
         ['Learner steps', steps.length],
         ['Samples logueados', savedSamples],
-        ['Jobs MCTS', runs.reduce((acc, row) => acc + (row.report?.used_mcts_jobs || 0), 0)],
-        ['Jobs reweighted', runs.reduce((acc, row) => acc + (row.report?.reweighted_jobs || 0), 0)],
+        ['Jobs MCTS', mctsJobs],
+        ['MCTS real', actualMctsRate === null ? null : `${{fmt(actualMctsRate * 100, 1)}}%`],
+        ['MCTS configurado', configuredMctsRate === null ? null : `${{fmt(configuredMctsRate * 100, 1)}}%`],
+        ['Duracion ultimo ciclo', latestDuration === undefined ? null : formatDuration(latestDuration)],
+        ['Samples/s ultimo ciclo', latestSamplesPerSecond],
+        ['Samples por job', totalClassifiedJobs ? savedSamples / totalClassifiedJobs : null],
+        ['Jobs reweighted', reweightedJobs],
         ['Failed jobs', runs.reduce((acc, row) => acc + (row.report?.failed_jobs || 0), 0)],
         ['Ultima loss', latestStep?.loss],
       ];
@@ -1660,19 +2109,7 @@ def render_overview_dashboard(data: dict[str, Any]) -> str:
       `;
     }}
 
-    function renderBuffersAndCheckpoints() {{
-      const buffers = DATA.buffers;
-      document.getElementById('buffers').innerHTML = table([
-        ['Raw', buffers.raw],
-        ['Stock', buffers.stock],
-        ['Samples', buffers.samples],
-        ['Test MCTS', buffers.test_mcts],
-      ], [
-        {{label: 'Buffer', render: r => r[0]}},
-        {{label: 'Existe', render: r => r[1].exists ? 'si' : 'no'}},
-        {{label: 'Count', render: r => fmt(r[1].count ?? r[1].length)}},
-        {{label: 'Path', render: r => r[1].path}},
-      ]);
+    function renderCheckpoints() {{
       document.getElementById('checkpoints').innerHTML = table((DATA.checkpoints || []).slice().reverse(), [
         {{label: 'Nombre', key: 'name'}},
         {{label: 'Step', key: 'global_step_from_name'}},
@@ -1690,15 +2127,40 @@ def render_overview_dashboard(data: dict[str, Any]) -> str:
         {{key: 'value_loss', label: 'value', color: '#344054'}},
       ]);
       barChart('cycleChart', rowsForRun(DATA.logs.cycles));
+      const performanceCycles = rowsForRun(DATA.logs.cycles).map((cycle, index, cycles) => {{
+        const previous = cycles[index - 1];
+        const duration_seconds = previous && previous.run_id === cycle.run_id
+          ? (new Date(cycle.created_at) - new Date(previous.created_at)) / 1000
+          : null;
+        const saved = Number(cycle.cycle?.saved_samples || 0);
+        const mcts = Number(cycle.cycle?.used_mcts_jobs || 0);
+        const reweighted = Number(cycle.cycle?.reweighted_jobs || 0);
+        const total = mcts + reweighted;
+        return {{
+          ...cycle,
+          duration_seconds,
+          duration_minutes: duration_seconds > 0 ? duration_seconds / 60 : null,
+          samples_per_second: duration_seconds > 0 ? saved / duration_seconds : null,
+          mcts_percent: total ? mcts / total * 100 : null,
+          reweighted_percent: total ? reweighted / total * 100 : null,
+        }};
+      }});
+      lineChart('throughputChart', performanceCycles, [
+        {{key: 'samples_per_second', label: 'samples/s', color: '#116a5b'}},
+        {{key: 'duration_minutes', label: 'duracion min', color: '#b54708'}},
+      ]);
+      lineChart('jobMixChart', performanceCycles, [
+        {{key: 'mcts_percent', label: 'MCTS %', color: '#116a5b', format: 'percent'}},
+        {{key: 'reweighted_percent', label: 'reweighted %', color: '#344054', format: 'percent'}},
+      ]);
       renderTables();
       renderTestEvaluation();
-      renderTrajectoryAnalysis('rawAnalysis', DATA.analysis.raw);
-      renderTrajectoryAnalysis('stockAnalysis', DATA.analysis.stock);
-      renderSampleAnalysis();
-      renderBuffersAndCheckpoints();
+      renderCheckpoints();
     }}
 
+    {shared_dashboard_javascript()}
     initRunSelect();
+    initSharedDashboard();
     render();
   </script>
 </body>
@@ -1714,7 +2176,7 @@ def render_dashboard(data: dict[str, Any]) -> str:
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Workforce Trajectory Explorer</title>
+  <title>Workforce Zarr Dashboard</title>
   <style>
     :root {{
       --bg: #f6f7f8;
@@ -1943,44 +2405,26 @@ def render_dashboard(data: dict[str, Any]) -> str:
       header, main {{ padding-left: 14px; padding-right: 14px; }}
       .grid {{ grid-template-columns: 1fr; }}
     }}
+    {shared_dashboard_css()}
   </style>
 </head>
 <body>
   <header>
-    <h1>Workforce Trajectory Explorer</h1>
-    <div class="subtle">Snapshot generado: <span id="generatedAt"></span></div>
+    <div class="header-row">
+      <div>
+        <h1>Workforce Zarr Dashboard</h1>
+        <div class="subtle">
+          Snapshot generado: <span id="generatedAt"></span> · <span id="snapshotAge"></span>
+        </div>
+      </div>
+      <button class="icon-button" id="themeToggle" type="button"></button>
+    </div>
     <div class="toolbar">
-      <label>Run <select id="runSelect"></select></label>
-      <button id="showAll">Mostrar todo</button>
-      <a class="button" href="training_dashboard.html">Volver al dashboard</a>
-      <span class="subtle">Para actualizar, volver a ejecutar <code>scripts/build_training_dashboard.py</code>.</span>
+      <a class="button" href="model_dashboard.html">Abrir dashboard del modelo</a>
+      <span class="subtle">Para actualizar, volver a ejecutar <code>scripts/build_zarr_dashboard.py</code>.</span>
     </div>
   </header>
   <main>
-    <section class="grid" id="cards"></section>
-
-    <section class="two-col">
-      <div class="panel">
-        <h2>Loss del learner</h2>
-        <div class="chart" id="lossChart"></div>
-      </div>
-      <div class="panel">
-        <h2>Samples por ciclo</h2>
-        <div class="chart" id="cycleChart"></div>
-      </div>
-    </section>
-
-    <section class="two-col">
-      <div class="panel">
-        <h2>Runs</h2>
-        <div id="runsTable"></div>
-      </div>
-      <div class="panel">
-        <h2>Ciclos</h2>
-        <div id="cyclesTable"></div>
-      </div>
-    </section>
-
     <section class="panel">
       <h2>Buffers Zarr</h2>
       <div id="buffers"></div>
@@ -1992,8 +2436,8 @@ def render_dashboard(data: dict[str, Any]) -> str:
         <div id="sampleBuffer"></div>
       </div>
       <div class="panel">
-        <h2>Checkpoints</h2>
-        <div id="checkpoints"></div>
+        <h2>Rutas inspeccionadas</h2>
+        <pre id="pathsDetails"></pre>
       </div>
     </section>
 
@@ -2007,12 +2451,29 @@ def render_dashboard(data: dict[str, Any]) -> str:
       </div>
       <div class="toolbar">
         <label>Trayectoria <select id="trajectorySelect"></select></label>
+        <label>Reward
+          <select id="trajectoryRewardFilter">
+            <option value="ALL">Todos</option>
+            <option value="POSITIVE">Positivo</option>
+            <option value="ZERO">Cero</option>
+            <option value="NEGATIVE">Negativo</option>
+          </select>
+        </label>
+        <input class="table-search" id="trajectoryFilter" type="search" placeholder="Buscar trajectory ID…">
         <span class="subtle" id="trajectorySummary"></span>
       </div>
       <div class="stepbar">
         <button id="prevStep">Anterior</button>
         <input id="stepRange" type="range" min="0" max="0" value="0">
         <button id="nextStep">Siguiente</button>
+        <div class="playback-controls">
+          <button id="playSteps" type="button">Reproducir</button>
+          <select id="playbackSpeed" title="Velocidad de reproduccion">
+            <option value="1200">0.8x</option>
+            <option value="700" selected>1x</option>
+            <option value="350">2x</option>
+          </select>
+        </div>
         <span class="pill" id="stepLabel">step 0</span>
       </div>
       <div class="explorer-layout">
@@ -2025,6 +2486,8 @@ def render_dashboard(data: dict[str, Any]) -> str:
           <div id="stateDetails"></div>
           <h3 style="margin-top:14px">Policy</h3>
           <div id="policyDetails"></div>
+          <h3 style="margin-top:14px">Cambio respecto al estado anterior</h3>
+          <div id="stateDelta"></div>
           <h3 style="margin-top:14px">Metadata</h3>
           <pre id="trajectoryMetadata"></pre>
         </div>
@@ -2032,7 +2495,7 @@ def render_dashboard(data: dict[str, Any]) -> str:
     </section>
 
     <section class="panel">
-      <h2>Detalles crudos</h2>
+      <h2>Detalles del snapshot Zarr</h2>
       <pre id="rawDetails"></pre>
     </section>
   </main>
@@ -2043,6 +2506,8 @@ def render_dashboard(data: dict[str, Any]) -> str:
     let explorerSource = 'raw';
     let explorerTrajectoryIndex = 0;
     let explorerStepIndex = 0;
+    let playbackTimer = null;
+    let requestedTrajectoryId = null;
 
     function fmt(value, digits = 3) {{
       if (value === null || value === undefined) return '-';
@@ -2059,7 +2524,18 @@ def render_dashboard(data: dict[str, Any]) -> str:
     }}
 
     function explorerTrajectories() {{
-      return DATA.explorer?.[explorerSource]?.trajectories || [];
+      const query = (document.getElementById('trajectoryFilter')?.value || '').trim().toLowerCase();
+      const rewardFilter = document.getElementById('trajectoryRewardFilter')?.value || 'ALL';
+      return (DATA.explorer?.[explorerSource]?.trajectories || []).filter(trajectory => {{
+        const reward = Number(trajectory.final_reward);
+        const matchesQuery = !query || String(trajectory.trajectory_id).toLowerCase().includes(query);
+        const matchesReward =
+          rewardFilter === 'ALL' ||
+          (rewardFilter === 'POSITIVE' && reward > 0) ||
+          (rewardFilter === 'ZERO' && reward === 0) ||
+          (rewardFilter === 'NEGATIVE' && reward < 0);
+        return matchesQuery && matchesReward;
+      }});
     }}
 
     function currentTrajectory() {{
@@ -2267,8 +2743,16 @@ def render_dashboard(data: dict[str, Any]) -> str:
     }}
 
     function initExplorer() {{
+      const url = new URL(window.location.href);
+      const requestedSource = url.searchParams.get('source');
+      if (requestedSource && DATA.explorer?.[requestedSource]) explorerSource = requestedSource;
+      requestedTrajectoryId = url.searchParams.get('trajectory');
+      explorerStepIndex = Math.max(0, Number(url.searchParams.get('step') || 0));
+
       document.querySelectorAll('[data-explorer-source]').forEach(button => {{
+        button.classList.toggle('active', button.dataset.explorerSource === explorerSource);
         button.addEventListener('click', () => {{
+          stopPlayback();
           explorerSource = button.dataset.explorerSource;
           explorerTrajectoryIndex = 0;
           explorerStepIndex = 0;
@@ -2279,6 +2763,7 @@ def render_dashboard(data: dict[str, Any]) -> str:
       }});
 
       document.getElementById('trajectorySelect').addEventListener('change', event => {{
+        stopPlayback();
         explorerTrajectoryIndex = Number(event.target.value || 0);
         explorerStepIndex = 0;
         renderExplorer();
@@ -2297,6 +2782,69 @@ def render_dashboard(data: dict[str, Any]) -> str:
         explorerStepIndex = Math.min(last, explorerStepIndex + 1);
         renderExplorerStep();
       }});
+      document.getElementById('trajectoryFilter').addEventListener('input', () => {{
+        stopPlayback();
+        explorerTrajectoryIndex = 0;
+        explorerStepIndex = 0;
+        renderExplorer();
+      }});
+      document.getElementById('trajectoryRewardFilter').addEventListener('change', () => {{
+        stopPlayback();
+        explorerTrajectoryIndex = 0;
+        explorerStepIndex = 0;
+        renderExplorer();
+      }});
+      document.getElementById('playSteps').addEventListener('click', togglePlayback);
+      document.getElementById('playbackSpeed').addEventListener('change', () => {{
+        if (playbackTimer) {{
+          stopPlayback();
+          startPlayback();
+        }}
+      }});
+      document.addEventListener('keydown', event => {{
+        if (event.target.matches('input, select, textarea')) return;
+        if (event.key === 'ArrowLeft') {{
+          explorerStepIndex = Math.max(0, explorerStepIndex - 1);
+          renderExplorerStep();
+        }}
+        if (event.key === 'ArrowRight') {{
+          const last = Math.max(0, (currentTrajectory()?.steps?.length || 1) - 1);
+          explorerStepIndex = Math.min(last, explorerStepIndex + 1);
+          renderExplorerStep();
+        }}
+        if (event.key === ' ') {{
+          event.preventDefault();
+          togglePlayback();
+        }}
+      }});
+    }}
+
+    function togglePlayback() {{
+      playbackTimer ? stopPlayback() : startPlayback();
+    }}
+
+    function startPlayback() {{
+      const trajectory = currentTrajectory();
+      if (!trajectory?.steps?.length) return;
+      if (explorerStepIndex >= trajectory.steps.length - 1) explorerStepIndex = 0;
+      document.getElementById('playSteps').textContent = 'Pausar';
+      const delay = Number(document.getElementById('playbackSpeed').value || 700);
+      playbackTimer = window.setInterval(() => {{
+        const current = currentTrajectory();
+        if (!current || explorerStepIndex >= current.steps.length - 1) {{
+          stopPlayback();
+          return;
+        }}
+        explorerStepIndex += 1;
+        renderExplorerStep();
+      }}, delay);
+    }}
+
+    function stopPlayback() {{
+      if (playbackTimer) window.clearInterval(playbackTimer);
+      playbackTimer = null;
+      const button = document.getElementById('playSteps');
+      if (button) button.textContent = 'Reproducir';
     }}
 
     function renderExplorer() {{
@@ -2320,12 +2868,21 @@ def render_dashboard(data: dict[str, Any]) -> str:
       select.value = String(explorerTrajectoryIndex);
 
       const trajectory = currentTrajectory();
+      if (requestedTrajectoryId) {{
+        const requestedIndex = trajectories.findIndex(item => item.trajectory_id === requestedTrajectoryId);
+        if (requestedIndex >= 0) {{
+          explorerTrajectoryIndex = requestedIndex;
+          select.value = String(requestedIndex);
+        }}
+        requestedTrajectoryId = null;
+      }}
+      const selectedTrajectory = currentTrajectory();
       const stepRange = document.getElementById('stepRange');
-      stepRange.max = String(Math.max(0, trajectory.steps.length - 1));
-      explorerStepIndex = Math.min(explorerStepIndex, trajectory.steps.length - 1);
+      stepRange.max = String(Math.max(0, selectedTrajectory.steps.length - 1));
+      explorerStepIndex = Math.min(explorerStepIndex, selectedTrajectory.steps.length - 1);
       stepRange.value = String(explorerStepIndex);
       document.getElementById('trajectorySummary').textContent =
-        `${{explorerSource}} · ${{trajectory.trajectory_id}} · steps=${{trajectory.length}}`;
+        `${{explorerSource}} · ${{selectedTrajectory.trajectory_id}} · steps=${{selectedTrajectory.length}} · visibles=${{trajectories.length}}`;
       renderExplorerStep();
     }}
 
@@ -2341,7 +2898,17 @@ def render_dashboard(data: dict[str, Any]) -> str:
       renderHeatmap(step.state?.residual_demand || []);
       renderStateDetails(step);
       renderPolicyDetails(step);
+      renderStateDelta(trajectory, explorerStepIndex);
       renderTrajectoryMetadata(trajectory, step);
+      updateExplorerUrl(trajectory);
+    }}
+
+    function updateExplorerUrl(trajectory) {{
+      const url = new URL(window.location.href);
+      url.searchParams.set('source', explorerSource);
+      url.searchParams.set('trajectory', trajectory.trajectory_id);
+      url.searchParams.set('step', String(explorerStepIndex));
+      window.history.replaceState(null, '', url);
     }}
 
     function renderHeatmap(matrix) {{
@@ -2456,18 +3023,56 @@ def render_dashboard(data: dict[str, Any]) -> str:
     }}
 
     function renderPolicyDetails(step) {{
-      const entries = step.policy_top || [];
+      const entries = (step.policy_top || []).slice().sort((left, right) => {{
+        if (left.selected !== right.selected) return left.selected ? -1 : 1;
+        if (left.legal !== right.legal) return left.legal ? -1 : 1;
+        return right.prob - left.prob;
+      }});
       const maxProb = Math.max(...entries.map(entry => entry.prob), 1e-9);
       document.getElementById('policyDetails').innerHTML = entries.map(entry => {{
         const width = Math.max(1, Math.round((entry.prob / maxProb) * 100));
-        const klass = entry.selected ? 'policy-row selected' : 'policy-row';
+        const klass = `policy-row${{entry.selected ? ' selected' : ''}}${{entry.legal ? '' : ' illegal'}}`;
         return `<div class="${{klass}}">
           <div>#${{entry.action_id}}</div>
-          <div>${{entry.action?.label || ''}}</div>
+          <div>${{entry.action?.label || ''}}${{entry.legal ? '' : ' · ilegal'}}</div>
           <div class="policy-bar"><div class="policy-fill" style="width:${{width}}%"></div></div>
           <div>${{fmt(entry.prob, 6)}}</div>
         </div>`;
       }}).join('');
+    }}
+
+    function renderStateDelta(trajectory, index) {{
+      const target = document.getElementById('stateDelta');
+      if (index <= 0) {{
+        target.innerHTML = '<p class="subtle">Estado inicial de la trayectoria.</p>';
+        return;
+      }}
+      const previous = trajectory.steps[index - 1]?.state || {{}};
+      const current = trajectory.steps[index]?.state || {{}};
+      const previousMatrix = previous.residual_demand || [];
+      const currentMatrix = current.residual_demand || [];
+      let changedCells = 0;
+      let demandDelta = 0;
+      currentMatrix.forEach((row, rowIndex) => row.forEach((value, columnIndex) => {{
+        const before = Number(previousMatrix[rowIndex]?.[columnIndex] || 0);
+        const after = Number(value || 0);
+        if (before !== after) changedCells += 1;
+        demandDelta += after - before;
+      }}));
+      const stockBefore = (previous.remaining_stock || []).reduce((sum, value) => sum + Number(value || 0), 0);
+      const stockAfter = (current.remaining_stock || []).reduce((sum, value) => sum + Number(value || 0), 0);
+      const rows = [
+        ['Celdas modificadas', changedCells],
+        ['Cambio demanda residual', demandDelta],
+        ['Cambio stock total', stockAfter - stockBefore],
+        ['Expansion mode', `${{String(previous.expansion_mode)}} → ${{String(current.expansion_mode)}}`],
+        ['Modalidad', `${{fmt(previous.current_modality)}} → ${{fmt(current.current_modality)}}`],
+      ];
+      target.innerHTML = '<div class="kv">' + rows.map(([key, value]) => {{
+        const numeric = typeof value === 'number';
+        const klass = numeric && value > 0 ? 'delta-positive' : numeric && value < 0 ? 'delta-negative' : '';
+        return `<div>${{key}}</div><div class="${{klass}}">${{fmt(value)}}</div>`;
+      }}).join('') + '</div>';
     }}
 
     function renderTrajectoryMetadata(trajectory, step) {{
@@ -2491,28 +3096,18 @@ def render_dashboard(data: dict[str, Any]) -> str:
 
     function render() {{
       document.getElementById('generatedAt').textContent = DATA.generated_at;
-      renderCards();
-      const steps = rowsForRun(DATA.logs.learner_steps);
-      lineChart('lossChart', steps, [
-        {{key: 'loss', label: 'loss', color: '#116a5b'}},
-        {{key: 'policy_loss', label: 'policy', color: '#b54708'}},
-        {{key: 'value_loss', label: 'value', color: '#344054'}},
-      ]);
-      barChart('cycleChart', rowsForRun(DATA.logs.cycles));
-      renderTables();
       renderBuffers();
       renderSampleBuffer();
-      renderCheckpoints();
       renderExplorer();
+      document.getElementById('pathsDetails').textContent = JSON.stringify(DATA.paths, null, 2);
       document.getElementById('rawDetails').textContent = JSON.stringify({{
         paths: DATA.paths,
-        derived: DATA.derived,
-        latest_run: DATA.derived.latest_run,
-        latest_cycle: DATA.derived.latest_cycle,
+        buffers: DATA.buffers,
       }}, null, 2);
     }}
 
-    initRunSelect();
+    {shared_dashboard_javascript()}
+    initSharedDashboard();
     initExplorer();
     render();
   </script>

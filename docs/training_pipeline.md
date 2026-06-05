@@ -687,41 +687,49 @@ train_gpu_mid_001_cycle_001
 La secuencia se guarda en `datasets/reports/run_sequences.json`. Este archivo
 debe conservarse al limpiar logs si se quiere continuar la numeracion.
 
-### Visor de entrenamiento
+### Dashboards
 
-El entrenamiento deja suficientes datos para generar un visor HTML sin tocar el
-pipeline: logs JSONL, checkpoints, `TrajectoryBuffer` raw/stock y
-`SampleBuffer`.
+Los dashboards se construyen por separado para que el monitoreo del modelo no
+necesite abrir los buffers Zarr mientras el entrenamiento los está escribiendo.
 
-Para construir o refrescar el visor:
+Para construir o refrescar el dashboard liviano del modelo:
 
 ```bash
-uv run python scripts/build_training_dashboard.py
+uv run python scripts/build_model_dashboard.py
 ```
 
 Salida por defecto:
 
 ```text
-datasets/reports/training_dashboard.html
-datasets/reports/trajectory_explorer.html
+datasets/reports/model_dashboard.html
 ```
 
-Durante una corrida larga se puede regenerar periodicamente y refrescar el
-navegador:
+Este dashboard lee logs JSONL, reportes JSON de evaluación y nombres de
+checkpoints. No abre ningún Zarr, por lo que puede regenerarse durante el
+entrenamiento:
 
 ```bash
-watch -n 30 'uv run python scripts/build_training_dashboard.py'
+watch -n 30 'uv run python scripts/build_model_dashboard.py'
 ```
 
-El dashboard principal muestra corridas, ciclos, losses del learner,
-checkpoints, conteos de MCTS vs reweighted, resumen de buffers Zarr, analisis
-agregado de distribuciones y la seccion `Evaluacion MCTS del test set`. Esa
-seccion lee `datasets/evaluation/mcts_test/reports/runs.jsonl` para graficar la
-evolucion de positivos sobre total, `positive_rate`, mejora contra el reward
-original, rewards medios y tiempos. El explorador de trayectorias vive en
-`trajectory_explorer.html` y permite navegar estado por estado las ultimas
-trayectorias cargadas, incluyendo el buffer `Test MCTS` si existe. Ambos son
-una foto del estado actual; no escriben ni modifican buffers.
+Para construir el dashboard dedicado a buffers y trayectorias:
+
+```bash
+uv run python scripts/build_zarr_dashboard.py
+```
+
+Salida:
+
+```text
+datasets/reports/zarr_dashboard.html
+```
+
+Este segundo comando abre raw, stock, samples y test MCTS. Incluye resúmenes de
+buffers y navegación estado por estado. Puede competir por I/O con una corrida
+activa, por lo que conviene ejecutarlo entre ciclos o al finalizar.
+
+`scripts/build_training_dashboard.py` queda disponible como comando legado que
+genera ambos dashboards en una sola ejecución.
 
 ### Paso 6. Escalar la corrida
 
@@ -763,7 +771,8 @@ Ajustes manuales esperados a medida que aprende el modelo:
 | 3 | Generacion MCTS + reweighted | Procesa trayectorias stock. Con probabilidad `p_mcts` genera trayectorias MCTS; con `1-p_mcts` recalcula policy artificial con menor `policy_weight`. El orquestador aplana todo en `SampleBuffer`. | `scripts/generate_mcts_samples.py` | `datasets/derived/stock_adjusted/trajectories.zarr` | `datasets/samples/samples.zarr` | `--workers 10`, `--p-mcts`, `--start-mode`, `--max-seed-states`, `--seed-state-probability`, `--mcts-simulations`, `--evaluator-batch-wait 0` | `datasets/reports/mcts_generation_runs.jsonl`, `mcts_generation_cycles.jsonl`; progreso `[mcts_generation]`. |
 | 4 | Ciclo MCTS + learner + reload | Igual que el paso 3, pero al llegar a `sample_limit_per_cycle` pausa asignacion, espera workers activos, entrena la ResNet, guarda checkpoint y recarga evaluator. | `scripts/generate_mcts_samples.py --train-on-cycle` | `stock_adjusted` + `samples.zarr` acumulado | `samples.zarr` + checkpoints `.pt` | `--sample-limit-per-cycle`, `--learner-steps`, `--learner-batch-size`, `--learner-learning-rate`, `--checkpoint-dir`, `--device cuda` | `mcts_generation_learner_steps.jsonl`, `cycle_ready`, `learner_done`, checkpoints `workforce_resnet_<step>.pt`. |
 | 5 | Evaluacion del test set | Corre MCTS desde cada estado inicial del test set usando el ultimo checkpoint o uno indicado. Guarda trayectorias completas y metricas por corrida. | `scripts/evaluate_test_set_mcts.py` | `datasets/test/initial_states.zarr` | `datasets/evaluation/mcts_test/trajectories.zarr` | `--workers 10`, `--mcts-simulations 300`, `--evaluator-batch-size 10`, `--evaluator-batch-wait 0`, `--device cuda` | `datasets/evaluation/mcts_test/reports/trajectories.jsonl`, `run_summary.json`, `runs.jsonl`. |
-| 6 | Dashboard y explorador | Construye HTML estatico con logs, buffers, distribuciones, curvas de entrenamiento y evaluacion MCTS del test set. | `scripts/build_training_dashboard.py` | logs + buffers Zarr | `datasets/reports/training_dashboard.html`, `trajectory_explorer.html` | `--reports-dir`, `--test-eval-reports-dir`, `--max-sample-scan`, `--explorer-trajectory-count` | No genera entrenamiento; solo snapshot HTML. |
+| 6 | Dashboard del modelo | Construye el HTML liviano con runs, ciclos, losses, checkpoints y evaluación MCTS. | `scripts/build_model_dashboard.py` | logs JSON/JSONL + checkpoints | `datasets/reports/model_dashboard.html` | `--reports-dir`, `--checkpoint-dir`, `--test-eval-reports-dir` | No abre buffers Zarr; apto para ejecutar durante entrenamiento. |
+| 7 | Dashboard Zarr | Construye el visor de buffers y el explorador estado por estado. | `scripts/build_zarr_dashboard.py` | buffers raw, stock, samples y test MCTS | `datasets/reports/zarr_dashboard.html` | `--max-sample-scan`, `--max-trajectory-preview`, `--explorer-trajectory-count` | Lectura intensiva; puede competir por I/O con el entrenamiento. |
 
 ### Plan sugerido de ciclos MCTS
 
@@ -817,8 +826,8 @@ Ajustes manuales esperados a medida que aprende el modelo:
 | `datasets/evaluation/mcts_test/reports/trajectories.jsonl` | `evaluate_test_set_mcts.py` | Una fila por trayectoria evaluada | Reward final, value original, value_error, states_count, elapsed. | Analizar casos buenos/malos y tiempos. |
 | `datasets/evaluation/mcts_test/reports/run_summary.json` | evaluacion | Ultima corrida | Positivos, mejores que original, medias, errores. | Resumen rapido de la evaluacion actual. |
 | `datasets/evaluation/mcts_test/reports/runs.jsonl` | evaluacion | Una fila por corrida | Historial de summaries de evaluacion. | Curvas de `positive_rate`, reward medio y mejora por checkpoint. |
-| `datasets/reports/training_dashboard.html` | dashboard | Al ejecutar builder | Snapshot visual de entrenamiento y evaluacion. | Monitoreo principal. |
-| `datasets/reports/trajectory_explorer.html` | dashboard | Al ejecutar builder | Ultimas trayectorias raw, stock, samples y test MCTS. | Inspeccion estado por estado. |
+| `datasets/reports/model_dashboard.html` | dashboard | Al ejecutar `build_model_dashboard.py` | Snapshot visual de entrenamiento y evaluación. | Monitoreo liviano durante entrenamiento. |
+| `datasets/reports/zarr_dashboard.html` | dashboard | Al ejecutar `build_zarr_dashboard.py` | Últimas trayectorias raw, stock, samples y test MCTS. | Inspección estado por estado. |
 
 ## Referencia de parametros
 
