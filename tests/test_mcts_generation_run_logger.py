@@ -67,11 +67,13 @@ def test_mcts_generation_run_logger_writes_jsonl(tmp_path) -> None:
     run_lines = _read_jsonl(tmp_path / logger.runs_filename)
 
     assert cycle_lines[0]["run_id"] == "run_test"
+    assert cycle_lines[0]["cycle_id"] == "run_test_cycle_000"
     assert cycle_lines[0]["cycle"]["saved_samples"] == 350
     assert cycle_lines[0]["learner"]["checkpoint_path"].endswith("000001.pt")
     assert cycle_lines[0]["learner"]["last_metric"]["loss"] == 1.0
 
     assert learner_lines[0]["run_id"] == "run_test"
+    assert learner_lines[0]["cycle_id"] == "run_test_cycle_000"
     assert learner_lines[0]["cycle_index"] == 0
     assert learner_lines[0]["metric"]["policy_loss"] == 0.8
 
@@ -79,6 +81,50 @@ def test_mcts_generation_run_logger_writes_jsonl(tmp_path) -> None:
     assert run_lines[0]["status"] == "completed"
     assert run_lines[0]["args"]["workers"] == 2
     assert run_lines[0]["report"]["cycle_count"] == 1
+
+
+def test_mcts_generation_run_logger_uses_correlative_ids(tmp_path) -> None:
+    first = MCTSGenerationRunLogger(
+        reports_dir=tmp_path,
+        run_prefix="train_gpu_mid",
+    )
+    second = MCTSGenerationRunLogger(
+        reports_dir=tmp_path,
+        run_prefix="train_gpu_mid",
+    )
+    other_prefix = MCTSGenerationRunLogger(
+        reports_dir=tmp_path,
+        run_prefix="train_gpu_advanced",
+    )
+
+    assert first.run_id == "train_gpu_mid_001"
+    assert second.run_id == "train_gpu_mid_002"
+    assert other_prefix.run_id == "train_gpu_advanced_001"
+
+    sequences = json.loads(
+        (tmp_path / MCTSGenerationRunLogger.sequences_filename).read_text(
+            encoding="utf-8"
+        )
+    )
+    assert sequences == {
+        "train_gpu_advanced": 1,
+        "train_gpu_mid": 2,
+    }
+
+
+def test_manual_run_id_does_not_consume_sequence(tmp_path) -> None:
+    manual = MCTSGenerationRunLogger(
+        reports_dir=tmp_path,
+        run_id="manual_run",
+        run_prefix="train_gpu_mid",
+    )
+    automatic = MCTSGenerationRunLogger(
+        reports_dir=tmp_path,
+        run_prefix="train_gpu_mid",
+    )
+
+    assert manual.run_id == "manual_run"
+    assert automatic.run_id == "train_gpu_mid_001"
 
 
 def _read_jsonl(path):

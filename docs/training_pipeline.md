@@ -657,10 +657,35 @@ loss, policy loss, value loss y `mean_policy_weight`.
 Flags utiles:
 
 ```text
---run-id                  fija el ID de corrida
+--run-id                  fija manualmente el ID de corrida
+--run-prefix              prefijo del ID correlativo automatico
 --reports-dir             cambia el directorio de logs
 --disable-report-logging  desactiva logs persistentes
 ```
+
+Si no se pasa `--run-id`, el logger reserva un correlativo por prefijo:
+
+```bash
+--run-prefix train_gpu_mid
+```
+
+Genera:
+
+```text
+train_gpu_mid_001
+train_gpu_mid_002
+train_gpu_mid_003
+```
+
+Los ciclos internos quedan identificados como:
+
+```text
+train_gpu_mid_001_cycle_000
+train_gpu_mid_001_cycle_001
+```
+
+La secuencia se guarda en `datasets/reports/run_sequences.json`. Este archivo
+debe conservarse al limpiar logs si se quiere continuar la numeracion.
 
 ### Visor de entrenamiento
 
@@ -725,6 +750,154 @@ Ajustes manuales esperados a medida que aprende el modelo:
 - aumentar `mcts-simulations`;
 - aumentar `sample_limit_per_cycle`;
 - ajustar `learner-steps`, `batch-size` y learning rate.
+
+## Mapa operativo de entrenamiento
+
+### Flujo principal
+
+| # | Operacion | Descripcion | Script | Buffer In | Buffer Out | Parametros clave | Logs / reportes |
+|---:|---|---|---|---|---|---|---|
+| 0 | Generacion del test set fijo | Genera problemas de validacion que se mantienen constantes para comparar checkpoints. Internamente resuelve trayectorias completas, pero guarda solo el estado inicial con su `value=final_reward`. | `scripts/generate_initial_state_test_set.py` | n/a | `datasets/test/initial_states.zarr` | `n_samples=100`, `--workers 10`, `--noise-k-max 0.8`, `--noise-k-lambda 10.0`, `--overwrite` | Progreso en consola. El buffer queda en formato `SampleBuffer`. |
+| 1 | Simulacion de demanda raw | Genera trayectorias resueltas a partir de cobertura base, ruido de demanda y replay con `WorkforceEngine`. Estas trayectorias sirven como base factible. | `scripts/generate_raw_demand_dataset.py` | n/a | `datasets/raw/trajectories.zarr` | `n_samples`, `--workers`, `--allowed-entry-hours`, `--closing-hour`, `--noise-k-max`, `--noise-k-lambda`, `--mod-*-max` | Progreso en consola `[dataset_generation]`. Metadata por trayectoria en Zarr. |
+| 2 | Simulacion stock adjusted | Toma trayectorias raw y reduce stock con probabilidad `p_stock` para inducir casos con `expansion_mode`. Si no reduce, copia la raw directa. | `scripts/generate_stock_adjusted_dataset.py` | `datasets/raw/trajectories.zarr` | `datasets/derived/stock_adjusted/trajectories.zarr` | `--workers 10`, `--p-stock 0.25`, `--skip-existing`, `--overwrite` | Progreso en consola. Metadata: `stock_was_reduced`, `has_expansion_mode`, `first_expansion_step`. |
+| 3 | Generacion MCTS + reweighted | Procesa trayectorias stock. Con probabilidad `p_mcts` genera trayectorias MCTS; con `1-p_mcts` recalcula policy artificial con menor `policy_weight`. El orquestador aplana todo en `SampleBuffer`. | `scripts/generate_mcts_samples.py` | `datasets/derived/stock_adjusted/trajectories.zarr` | `datasets/samples/samples.zarr` | `--workers 10`, `--p-mcts`, `--start-mode`, `--max-seed-states`, `--seed-state-probability`, `--mcts-simulations`, `--evaluator-batch-wait 0` | `datasets/reports/mcts_generation_runs.jsonl`, `mcts_generation_cycles.jsonl`; progreso `[mcts_generation]`. |
+| 4 | Ciclo MCTS + learner + reload | Igual que el paso 3, pero al llegar a `sample_limit_per_cycle` pausa asignacion, espera workers activos, entrena la ResNet, guarda checkpoint y recarga evaluator. | `scripts/generate_mcts_samples.py --train-on-cycle` | `stock_adjusted` + `samples.zarr` acumulado | `samples.zarr` + checkpoints `.pt` | `--sample-limit-per-cycle`, `--learner-steps`, `--learner-batch-size`, `--learner-learning-rate`, `--checkpoint-dir`, `--device cuda` | `mcts_generation_learner_steps.jsonl`, `cycle_ready`, `learner_done`, checkpoints `workforce_resnet_<step>.pt`. |
+| 5 | Evaluacion del test set | Corre MCTS desde cada estado inicial del test set usando el ultimo checkpoint o uno indicado. Guarda trayectorias completas y metricas por corrida. | `scripts/evaluate_test_set_mcts.py` | `datasets/test/initial_states.zarr` | `datasets/evaluation/mcts_test/trajectories.zarr` | `--workers 10`, `--mcts-simulations 300`, `--evaluator-batch-size 10`, `--evaluator-batch-wait 0`, `--device cuda` | `datasets/evaluation/mcts_test/reports/trajectories.jsonl`, `run_summary.json`, `runs.jsonl`. |
+| 6 | Dashboard y explorador | Construye HTML estatico con logs, buffers, distribuciones, curvas de entrenamiento y evaluacion MCTS del test set. | `scripts/build_training_dashboard.py` | logs + buffers Zarr | `datasets/reports/training_dashboard.html`, `trajectory_explorer.html` | `--reports-dir`, `--test-eval-reports-dir`, `--max-sample-scan`, `--explorer-trajectory-count` | No genera entrenamiento; solo snapshot HTML. |
+
+### Plan sugerido de ciclos MCTS
+
+| Fase | Objetivo | `p_mcts` | `start_mode` | `max_seed_states` | `seed_state_probability` | `mcts-simulations` | `sample_limit_per_cycle` | `learner-steps` | Evaluacion recomendada |
+|---:|---|---:|---|---:|---:|---:|---:|---:|---|
+| 1 | Aprender finales y estabilizar value | `0.15` | `backward_sampled` | `1` | `0.40` | `32` | `8000` | `80` | 100 samples, 100-300 sims |
+| 2 | Aumentar MCTS cerca del final | `0.25` | `backward_sampled` | `2` | `0.50` | `64` | `12000` | `100` | 100 samples, 300 sims |
+| 3 | Balancear final e inicio | `0.35` | `forward_sampled` | `2` | `0.35` | `96` | `16000` | `120` | 100 samples, 300 sims |
+| 4 | Dar mas libertad a MCTS | `0.50` | `forward_sampled` | `3` | `0.40` | `128` | `20000` | `150` | 100 samples, 300-500 sims |
+
+### Parametros por etapa
+
+| Parametro | Etapa | Valor inicial sugerido | Uso | Efecto esperado | Riesgo / nota |
+|---|---|---:|---|---|---|
+| `n_samples` | test set | `100` | Cantidad de problemas fijos de validacion. | Comparacion estable entre checkpoints. | No cambiarlo frecuentemente si se quiere comparabilidad historica. |
+| `n_samples` | raw | `5000` | Cantidad de trayectorias raw iniciales. | Mayor diversidad base. | Mas costo de generacion y almacenamiento. |
+| `--workers` | raw / stock / MCTS / eval | `10` | Paralelismo de generacion. | Mejor throughput en Ryzen 9 5900X. | Subir demasiado puede saturar CPU o colas. |
+| `--device` | MCTS / eval | `cuda` | Device del evaluador ResNet. | Usa GPU local. | Valores validos: `auto`, `cpu`, `cuda`; no usar `gpu`. |
+| `--noise-k-max` | raw / test | `0.8` | Maximo descuento de ruido. | Genera demanda residual variada. | Valores muy altos pueden generar casos demasiado dificiles. |
+| `--noise-k-lambda` | raw / test | `10.0` | Concentracion de ruido cerca de cero. | Muchos casos cercanos a factibles y algunos mas duros. | Menor lambda aumenta ruido efectivo promedio. |
+| `--p-stock` | stock | `0.25` | Probabilidad de reducir stock. | Aumenta casos con `expansion_mode`. | Si es muy alto, sesga demasiado hacia falta de recursos. |
+| `--p-mcts` | MCTS training | `0.15 -> 0.50` | Probabilidad de generar trayectorias con MCTS. | Aumenta calidad de policy targets a medida que aprende. | Muy alto al inicio puede gastar mucho sin suficientes rewards buenos. |
+| `--start-mode` | MCTS training | `backward_sampled`, luego `forward_sampled` | Seleccion de estados semilla. | Backward concentra aprendizaje cerca del final; forward da libertad progresiva. | Cambiar muy pronto puede diluir muestras ganadoras. |
+| `--max-seed-states` | MCTS training | `1 -> 3` | Estados adicionales para arrancar MCTS. | Mas trayectorias MCTS por job. | Multiplica costo y samples correlacionados. |
+| `--seed-state-probability` | MCTS training | `0.35 -> 0.50` | Probabilidad de elegir cada estado candidato. | Controla densidad de semillas intermedias. | Si es `1`, toma los primeros candidatos hasta el maximo. |
+| `--mcts-simulations` | MCTS training | `32 -> 128` | Simulaciones por decision. | Policies MCTS mas informadas. | Es uno de los mayores multiplicadores de tiempo. |
+| `--mcts-simulations` | evaluacion | `300` | Profundidad de evaluacion contra test set. | Medicion mas robusta de reward final. | `500` puede ser caro; usar para evaluaciones puntuales. |
+| `--sample-limit-per-cycle` | MCTS + learner | `8000 -> 20000` | Samples antes de cerrar ciclo. | Controla frecuencia de entrenamiento/reload. | Al alcanzarlo, deja de asignar jobs y espera activos; puede parecer pausa. |
+| `--learner-steps` | learner | `80 -> 150` | Updates por ciclo. | Mas aprendizaje por ciclo. | Demasiados steps pueden sobreajustar al buffer reciente. |
+| `--learner-batch-size` | learner | `64` | Batch de entrenamiento. | Estable con GPU 8GB. | Subirlo aumenta VRAM. |
+| `--evaluator-batch-size` | MCTS / eval | igual a `--workers` | Maximo batch del evaluator centralizado. | Mejor uso de GPU sin esperar batches enormes. | Si es muy alto con pocos workers no aporta. |
+| `--evaluator-batch-wait` | MCTS / eval | `0` | Espera para juntar requests. | Reduce latencia de MCTS sincrono. | `0.01` puede acumular mucha espera. |
+| `--request-timeout` | MCTS / eval | `120` | Timeout de requests al evaluator. | Evita bloqueos silenciosos si evaluator muere. | Debe ser mayor que una inferencia razonable bajo carga. |
+| `--run-prefix` | MCTS training | `train_gpu_mid` | Prefijo para IDs correlativos de corrida. | Genera IDs ordenables como `train_gpu_mid_001`. | Cada prefijo mantiene su propia secuencia. |
+| `--run-id` | MCTS training | `None` | ID manual de corrida. | Permite nombrar una corrida excepcional. | Tiene prioridad y no consume el correlativo automatico. |
+| `--overwrite-samples` | MCTS training | solo fase 1 | Recrea `samples.zarr`. | Arranque limpio. | No usar si se quiere acumular muestras entre fases. |
+| `--overwrite` | evaluacion | activado para corrida unica | Recrea output de evaluacion. | Dashboard limpio de ultima evaluacion. | Si se quiere historico por trayectoria, no usar overwrite o separar `output-root`. |
+
+### Logs y salidas de monitoreo
+
+| Archivo / salida | Generado por | Frecuencia | Contenido principal | Uso recomendado |
+|---|---|---|---|---|
+| Consola `[dataset_generation] jobs=...` | raw / stock | Cada `progress_interval` | Jobs procesados, OK, failed, saved, rate. | Detectar fallas o caidas de throughput. |
+| Consola `[mcts_generation] jobs=...` | MCTS generation | Cada `progress_interval` | Jobs OK/failed, samples acumulados, rate. | Ver avance de workers y cantidad de samples. |
+| Consola `[mcts_generation] cycle_ready=...` | MCTS + learner | Al cerrar ciclo | Resumen de ciclo: jobs, samples, MCTS vs reweighted. | Confirmar que `sample_limit_per_cycle` disparo entrenamiento. |
+| Consola `[mcts_generation] learner_done ...` | learner | Al terminar entrenamiento de ciclo | Checkpoint, global_step, loss, policy_loss, value_loss. | Ver si el modelo entrena y que checkpoint recargo. |
+| `datasets/reports/mcts_generation_runs.jsonl` | `generate_mcts_samples.py` | Una fila por corrida | Args, report final, jobs, samples, errores. | Historial general de corridas de entrenamiento. |
+| `datasets/reports/mcts_generation_cycles.jsonl` | `generate_mcts_samples.py` | Una fila por ciclo | Ciclo, samples, MCTS jobs, reweighted jobs, checkpoint. | Analizar curriculum y frecuencia de entrenamiento. |
+| `datasets/reports/mcts_generation_learner_steps.jsonl` | learner | Una fila por step | `loss`, `policy_loss`, `value_loss`, `mean_policy_weight`. | Graficar curva de aprendizaje. |
+| `datasets/reports/run_sequences.json` | logger MCTS | Al crear una corrida automatica | Ultimo correlativo reservado por `run-prefix`. | Mantenerlo al limpiar logs para no repetir IDs. |
+| `datasets/evaluation/mcts_test/reports/trajectories.jsonl` | `evaluate_test_set_mcts.py` | Una fila por trayectoria evaluada | Reward final, value original, value_error, states_count, elapsed. | Analizar casos buenos/malos y tiempos. |
+| `datasets/evaluation/mcts_test/reports/run_summary.json` | evaluacion | Ultima corrida | Positivos, mejores que original, medias, errores. | Resumen rapido de la evaluacion actual. |
+| `datasets/evaluation/mcts_test/reports/runs.jsonl` | evaluacion | Una fila por corrida | Historial de summaries de evaluacion. | Curvas de `positive_rate`, reward medio y mejora por checkpoint. |
+| `datasets/reports/training_dashboard.html` | dashboard | Al ejecutar builder | Snapshot visual de entrenamiento y evaluacion. | Monitoreo principal. |
+| `datasets/reports/trajectory_explorer.html` | dashboard | Al ejecutar builder | Ultimas trayectorias raw, stock, samples y test MCTS. | Inspeccion estado por estado. |
+
+## Referencia de parametros
+
+### Parametros comunes
+
+| Parametro | Scripts | Default | Que controla | Notas |
+|---|---|---:|---|---|
+| `--workers` | todos los generadores | varia por script | Cantidad de procesos worker. | En MCTS con `workers > 1` se usa un evaluador centralizado. |
+| `--seed` | raw, stock, MCTS, test set | `None` | Semilla para ordenar jobs y decisiones aleatorias. | Si queda en `None`, cada corrida genera variacion nueva. |
+| `--overwrite` | raw, stock, test set, evaluacion | desactivado | Recrea el buffer destino. | Borra/recrea el output del script correspondiente. |
+| `--progress-interval` | raw, stock, MCTS, evaluacion | varia | Frecuencia de logs de progreso. | No cambia la ejecucion, solo la impresion. |
+| `--device` | MCTS, evaluacion | `auto` o indicado | Device del evaluador ResNet. | Valores validos: `auto`, `cpu`, `cuda`. No usar `gpu`. |
+| `--checkpoint-path` | MCTS, evaluacion | varia | Checkpoint ResNet a cargar. | En evaluacion, si no se pasa, usa el `.pt` con mayor step numerico. |
+| `--checkpoint-dir` | MCTS, evaluacion | `modules/evaluators/resnet/checkpoints` | Directorio de checkpoints. | El learner escribe nuevos `.pt` ahi. |
+
+### Ruido y datos raw
+
+| Parametro | Default | Que controla | Notas |
+|---|---:|---|---|
+| `n_samples` | requerido | Cantidad de trayectorias raw a generar. | Argumento posicional de `generate_raw_demand_dataset.py` y `generate_initial_state_test_set.py`. |
+| `--allowed-entry-hours` | `6 12 18` | Horarios de entrada permitidos. | Si se restringen demasiado, cambia el espacio legal. |
+| `--closing-hour` | `22` | Hora de cierre. | Ningun horario de entrada permitido puede ser mayor o igual al cierre. |
+| `--max-overcoverage-tolerance` | `0.1` | Tolerancia maxima de sobrecobertura. | Es el `k` del `ProblemSetup`, no el ruido efectivo. |
+| `--noise-k-max` | `0.8` | Maximo del descuento de ruido. | El `k` efectivo se samplea en `[0, noise_k_max]`. |
+| `--noise-k-lambda` | `10.0` | Forma de la exponencial truncada del ruido. | Mas alto concentra mas masa cerca de `0`. |
+| `--mod-4-max`, `--mod-6-max`, `--mod-8-max` | `20` | Stock maximo por modalidad. | Define el rango de recursos iniciales por modalidad. |
+
+### Stock adjusted
+
+| Parametro | Default | Que controla | Notas |
+|---|---:|---|---|
+| `--source-path` | `datasets/raw/trajectories.zarr` | Buffer raw fuente. | Si no se pasa, usa el layout default. |
+| `--output-path` | `datasets/derived/stock_adjusted/trajectories.zarr` | Buffer stock destino. | Guarda `stock_<raw_id>`. |
+| `--p-stock` | `0.2` | Probabilidad de reducir stock. | Si no reduce, copia la raw directamente. |
+| `--n-samples` | `None` | Cantidad de raw a procesar. | Si queda en `None`, procesa todas. |
+| `--shuffle` | desactivado | Mezcla IDs fuente antes de aplicar `--n-samples`. | Util para procesar tandas representativas. |
+| `--skip-existing` | desactivado | Saltea trayectorias stock ya generadas. | Se ignora si se usa `--overwrite`. |
+
+### MCTS generation y learner
+
+| Parametro | Default | Que controla | Notas |
+|---|---:|---|---|
+| `--source-path` | `datasets/derived/stock_adjusted/trajectories.zarr` | Buffer stock fuente. | Cada job toma una trayectoria stock. |
+| `--sample-path` | `datasets/samples/samples.zarr` | SampleBuffer destino. | El orquestador aplana estados `X` e `Y`. |
+| `--n-trajectories` | `None` | Cantidad de trayectorias stock a procesar. | Si queda en `None`, procesa todas. |
+| `--p-mcts` | `0.2` | Probabilidad de usar MCTS por trayectoria stock. | Con `1 - p_mcts`, solo recalcula policy reweighted. |
+| `--start-mode` | `initial_only` | Estados desde los que arranca MCTS. | Opciones: `initial_only`, `forward_sampled`, `backward_sampled`. |
+| `--max-seed-states` | `0` | Cantidad maxima de estados adicionales. | Ademas del estado inicial en modos sampled. |
+| `--seed-state-probability` | `0.0` | Probabilidad de seleccionar cada estado candidato. | Solo aplica en `forward_sampled` y `backward_sampled`. |
+| `--mcts-simulations` | `16` | Simulaciones por decision MCTS. | Aumentarlo mejora busqueda pero multiplica tiempo. |
+| `--c-puct` | `1.0` | Exploracion PUCT. | Mas alto explora mas acciones con prior. |
+| `--mcts-policy-weight` | `1.0` | Peso de policy loss para samples MCTS. | Solo afecta policy loss durante entrenamiento. |
+| `--reweighted-policy-weight` | `0.5` | Peso de policy loss para samples reweighted. | Baja importancia de policies artificiales. |
+| `--sample-limit-per-cycle` | `None` | Samples maximos antes de cerrar ciclo. | Al alcanzarlo, deja de asignar jobs nuevos y espera jobs activos. |
+| `--train-on-cycle` | desactivado | Entrena learner al cerrar cada ciclo. | Luego recarga pesos del evaluador. |
+| `--learner-steps` | `100` | Steps de entrenamiento por ciclo. | Solo aplica con `--train-on-cycle`. |
+| `--learner-batch-size` | `64` | Batch size del learner. | Batches aleatorios desde `SampleBuffer`. |
+| `--learner-learning-rate` | `1e-4` | Learning rate. | Solo aplica con `--train-on-cycle`. |
+| `--learner-weight-decay` | `1e-4` | Weight decay. | Regularizacion del optimizer. |
+| `--learner-value-loss-weight` | `1.0` | Peso global de value loss. | No usa `policy_weight`. |
+| `--learner-policy-loss-weight` | `1.0` | Peso global de policy loss. | Se combina con `policy_weight` por sample. |
+| `--evaluator-batch-size` | `32` | Batch maximo del evaluador centralizado. | Con pocos workers, usar un valor cercano a `--workers` puede reducir latencia. |
+| `--evaluator-batch-wait` | `0.01` | Espera maxima para armar batch de inferencia. | En MCTS pesado conviene probar `0`. |
+| `--request-timeout` | `None` | Timeout de requests al evaluador. | Conviene usarlo para evitar bloqueos silenciosos. |
+| `--run-prefix` | `train_gpu_mid` | Prefijo para ID correlativo automatico. | Ejemplo: `train_gpu_mid_001`, luego `_002`. |
+| `--run-id` | `None` | ID manual de corrida. | Si se pasa, tiene prioridad sobre `--run-prefix`. |
+
+### Evaluacion del test set con MCTS
+
+| Parametro | Default | Que controla | Notas |
+|---|---:|---|---|
+| `--sample-path` | `datasets/test/initial_states.zarr` | Test set fijo fuente. | Formato `SampleBuffer`, un estado inicial por problema. |
+| `--output-root` | `datasets/evaluation/mcts_test` | Directorio de salida. | Contiene `trajectories.zarr` y `reports/`. |
+| `--trajectory-path` | `<output-root>/trajectories.zarr` | Buffer destino de trayectorias evaluadas. | Separado de entrenamiento. |
+| `--reports-dir` | `<output-root>/reports` | Reportes JSON. | Escribe `trajectories.jsonl`, `run_summary.json`, `runs.jsonl`. |
+| `--n-samples` | `None` | Cantidad de samples del test a evaluar. | Si queda en `None`, evalua todos. |
+| `--mcts-simulations` | `500` | Simulaciones por decision MCTS. | Es mucho mas caro que el default de entrenamiento. |
+| `--evaluator-batch-wait` | `0.01` | Espera para batching del evaluador. | Para evaluar con pocos workers, probar `0`. |
+| `--request-timeout` | `None` | Timeout de requests al evaluador. | Recomendado: `60` o mas, para detectar evaluator caido. |
 
 ## Comandos utiles
 

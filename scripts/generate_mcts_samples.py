@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
+import os
 import random
+import re
 import sys
-import uuid
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -226,7 +228,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--run-id",
         default=None,
-        help="ID opcional de corrida para logs. Default: generado automaticamente.",
+        help="ID manual de corrida. Si se pasa, tiene prioridad sobre --run-prefix.",
+    )
+    parser.add_argument(
+        "--run-prefix",
+        default="train_gpu_mid",
+        help="Prefijo del ID correlativo automatico. Default: train_gpu_mid.",
     )
     parser.add_argument(
         "--disable-report-logging",
@@ -292,6 +299,7 @@ def main() -> None:
         logger = MCTSGenerationRunLogger(
             reports_dir=reports_dir,
             run_id=args.run_id,
+            run_prefix=args.run_prefix,
         )
 
     source_ids = list_stock_trajectory_ids(source_path)
@@ -476,15 +484,24 @@ class MCTSGenerationRunLogger:
     runs_filename = "mcts_generation_runs.jsonl"
     cycles_filename = "mcts_generation_cycles.jsonl"
     learner_steps_filename = "mcts_generation_learner_steps.jsonl"
+    sequences_filename = "run_sequences.json"
+    sequence_lock_filename = ".run_sequences.lock"
 
     def __init__(
         self,
         reports_dir: str | Path,
         run_id: str | None = None,
+        run_prefix: str = "train_gpu_mid",
     ) -> None:
         self.reports_dir = Path(reports_dir)
         self.reports_dir.mkdir(parents=True, exist_ok=True)
-        self.run_id = str(run_id or self._new_run_id())
+        self.run_id = str(
+            run_id
+            or self._next_correlative_run_id(
+                reports_dir=self.reports_dir,
+                run_prefix=run_prefix,
+            )
+        )
 
     def log_cycle(
         self,
@@ -494,6 +511,7 @@ class MCTSGenerationRunLogger:
         payload = {
             "event": "cycle",
             "run_id": self.run_id,
+            "cycle_id": self._cycle_id(cycle_report.cycle_index),
             "created_at": self._now(),
             "cycle": asdict(cycle_report),
             "learner": self._learner_summary(learner_report),
@@ -509,6 +527,7 @@ class MCTSGenerationRunLogger:
             payload = {
                 "event": "learner_step",
                 "run_id": self.run_id,
+                "cycle_id": self._cycle_id(cycle_index),
                 "created_at": self._now(),
                 "cycle_index": int(cycle_index),
                 "checkpoint_path": str(learner_report.checkpoint_path),
@@ -594,10 +613,81 @@ class MCTSGenerationRunLogger:
     def _now() -> str:
         return datetime.now(timezone.utc).isoformat()
 
+    def _cycle_id(self, cycle_index: int) -> str:
+        return f"{self.run_id}_cycle_{int(cycle_index):03d}"
+
+    @classmethod
+    def _next_correlative_run_id(
+        cls,
+        reports_dir: Path,
+        run_prefix: str,
+    ) -> str:
+        prefix = cls._normalize_run_prefix(run_prefix)
+        lock_path = reports_dir / cls.sequence_lock_filename
+
+        with lock_path.open("a+", encoding="utf-8") as lock_file:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            sequences_path = reports_dir / cls.sequences_filename
+            sequences = cls._read_sequences(sequences_path)
+            logged_max = cls._max_logged_sequence(
+                reports_dir / cls.runs_filename,
+                prefix=prefix,
+            )
+            next_sequence = max(int(sequences.get(prefix, 0)), logged_max) + 1
+            sequences[prefix] = next_sequence
+            cls._write_sequences_atomic(sequences_path, sequences)
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+        return f"{prefix}_{next_sequence:03d}"
+
     @staticmethod
-    def _new_run_id() -> str:
-        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        return f"mcts_{timestamp}_{uuid.uuid4().hex[:8]}"
+    def _normalize_run_prefix(run_prefix: str) -> str:
+        prefix = re.sub(r"[^a-zA-Z0-9_-]+", "_", str(run_prefix).strip())
+        prefix = prefix.strip("_")
+        if not prefix:
+            raise ValueError("--run-prefix no puede quedar vacio.")
+        return prefix
+
+    @staticmethod
+    def _read_sequences(path: Path) -> dict[str, int]:
+        if not path.exists():
+            return {}
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return {}
+        return {
+            str(key): int(value)
+            for key, value in data.items()
+            if isinstance(value, int) and value >= 0
+        }
+
+    @staticmethod
+    def _write_sequences_atomic(path: Path, sequences: dict[str, int]) -> None:
+        temporary_path = path.with_suffix(path.suffix + ".tmp")
+        temporary_path.write_text(
+            json.dumps(sequences, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        os.replace(temporary_path, path)
+
+    @staticmethod
+    def _max_logged_sequence(path: Path, prefix: str) -> int:
+        if not path.exists():
+            return 0
+
+        pattern = re.compile(rf"^{re.escape(prefix)}_(\d+)$")
+        maximum = 0
+        with path.open("r", encoding="utf-8") as file:
+            for line in file:
+                try:
+                    run_id = str(json.loads(line).get("run_id", ""))
+                except json.JSONDecodeError:
+                    continue
+                match = pattern.match(run_id)
+                if match is not None:
+                    maximum = max(maximum, int(match.group(1)))
+        return maximum
 
 
 if __name__ == "__main__":
