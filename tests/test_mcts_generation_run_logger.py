@@ -1,9 +1,39 @@
 import argparse
 import json
+from pathlib import Path
 
 from modules.learning import ResNetLearnerReport, ResNetTrainStepMetrics
 from modules.mcts_generation import MCTSCycleReport, MCTSOrchestratorReport
-from scripts.generate_mcts_samples import MCTSGenerationRunLogger
+from scripts.generate_mcts_samples import (
+    MCTSGenerationRunLogger,
+    parse_checkpoint_step,
+    resolve_checkpoint_path,
+)
+
+
+def test_parse_checkpoint_step_from_filename() -> None:
+    assert parse_checkpoint_step("workforce_resnet_000338.pt") == 338
+    assert parse_checkpoint_step("model.pt") == -1
+
+
+def test_resolve_checkpoint_path_uses_largest_numeric_step(tmp_path: Path) -> None:
+    initial = tmp_path / "workforce_resnet_000.pt"
+    lower = tmp_path / "workforce_resnet_000201.pt"
+    latest = tmp_path / "workforce_resnet_000338.pt"
+    initial.write_bytes(b"")
+    lower.write_bytes(b"")
+    latest.write_bytes(b"")
+
+    assert resolve_checkpoint_path(None, tmp_path) == latest
+
+
+def test_resolve_checkpoint_path_prefers_explicit_path(tmp_path: Path) -> None:
+    explicit = tmp_path / "manual.pt"
+    latest = tmp_path / "workforce_resnet_000338.pt"
+    explicit.write_bytes(b"")
+    latest.write_bytes(b"")
+
+    assert resolve_checkpoint_path(explicit, tmp_path) == explicit
 
 
 def test_mcts_generation_run_logger_writes_jsonl(tmp_path) -> None:
@@ -19,12 +49,17 @@ def test_mcts_generation_run_logger_writes_jsonl(tmp_path) -> None:
         generated_trajectories=2,
         used_mcts_jobs=1,
         reweighted_jobs=1,
+        sample_start_index=0,
+        sample_end_index=350,
     )
     learner_report = ResNetLearnerReport(
         checkpoint_path="checkpoints/workforce_resnet_000001.pt",
         global_step=1,
         trained_steps=1,
         sample_count=350,
+        sample_start_index=0,
+        sample_end_index=350,
+        last_batch_size=350,
         metrics=[
             ResNetTrainStepMetrics(
                 step=1,
@@ -69,12 +104,16 @@ def test_mcts_generation_run_logger_writes_jsonl(tmp_path) -> None:
     assert cycle_lines[0]["run_id"] == "run_test"
     assert cycle_lines[0]["cycle_id"] == "run_test_cycle_000"
     assert cycle_lines[0]["cycle"]["saved_samples"] == 350
+    assert cycle_lines[0]["cycle"]["sample_start_index"] == 0
+    assert cycle_lines[0]["cycle"]["sample_end_index"] == 350
     assert cycle_lines[0]["learner"]["checkpoint_path"].endswith("000001.pt")
     assert cycle_lines[0]["learner"]["last_metric"]["loss"] == 1.0
 
     assert learner_lines[0]["run_id"] == "run_test"
     assert learner_lines[0]["cycle_id"] == "run_test_cycle_000"
     assert learner_lines[0]["cycle_index"] == 0
+    assert learner_lines[0]["sample_start_index"] == 0
+    assert learner_lines[0]["sample_end_index"] == 350
     assert learner_lines[0]["metric"]["policy_loss"] == 0.8
 
     assert run_lines[0]["run_id"] == "run_test"

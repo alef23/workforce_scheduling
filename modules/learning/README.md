@@ -4,8 +4,9 @@ Entrenamiento de modelos desde `SampleBuffer`.
 
 ## ResNetSampleLearner
 
-`ResNetSampleLearner` toma batches aleatorios del `SampleBuffer`, encodea `X`
-con `StateEncoder` y entrena `WorkforceResNet`.
+`ResNetSampleLearner` recibe un rango `[sample_start_index, sample_end_index)`,
+mezcla sus indices una sola vez y los consume en batches sin reposicion.
+Encodea `X` con `StateEncoder` y entrena `WorkforceResNet`.
 
 La loss de policy es cross entropy soft:
 
@@ -34,7 +35,8 @@ def on_cycle_ready(cycle_report):
             sample_buffer_path="datasets/samples/samples.zarr",
             checkpoint_path="modules/evaluators/resnet/checkpoints/workforce_resnet_000.pt",
             checkpoint_dir="modules/evaluators/resnet/checkpoints",
-            train_steps=100,
+            sample_start_index=cycle_report.sample_start_index,
+            sample_end_index=cycle_report.sample_end_index,
             batch_size=64,
             device="cuda",
         )

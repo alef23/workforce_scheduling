@@ -112,6 +112,15 @@ def parse_args() -> argparse.Namespace:
         help="Probabilidad de seleccionar cada estado candidato. Default: 0.0.",
     )
     parser.add_argument(
+        "--tail-window-size",
+        type=int,
+        default=None,
+        help=(
+            "Cantidad de estados anteriores al terminal considerados por "
+            "tail_forward_sampled. Requerido para ese modo."
+        ),
+    )
+    parser.add_argument(
         "--mcts-simulations",
         type=int,
         default=16,
@@ -143,8 +152,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--checkpoint-path",
-        default="modules/evaluators/resnet/checkpoints/workforce_resnet_000.pt",
-        help="Checkpoint ResNet usado por el evaluator.",
+        default=None,
+        help=(
+            "Checkpoint ResNet usado por el evaluator. Default: .pt con mayor "
+            "step numerico dentro de --checkpoint-dir."
+        ),
     )
     parser.add_argument(
         "--checkpoint-dir",
@@ -187,8 +199,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--learner-steps",
         type=int,
-        default=100,
-        help="Steps de entrenamiento por ciclo si --train-on-cycle. Default: 100.",
+        default=None,
+        help=(
+            "DEPRECATED: los steps se derivan como ceil(samples_del_ciclo / "
+            "learner_batch_size)."
+        ),
     )
     parser.add_argument(
         "--learner-batch-size",
@@ -269,6 +284,35 @@ def select_source_ids(
     return ids
 
 
+def parse_checkpoint_step(path: str | Path) -> int:
+    match = re.search(r"_(\d+)\.pt$", Path(path).name)
+    if match is None:
+        return -1
+    return int(match.group(1))
+
+
+def resolve_checkpoint_path(
+    checkpoint_path: str | Path | None,
+    checkpoint_dir: str | Path,
+) -> Path:
+    if checkpoint_path is not None:
+        path = Path(checkpoint_path)
+        if not path.exists():
+            raise FileNotFoundError(f"No existe el checkpoint: {path}")
+        return path
+
+    candidates = list(Path(checkpoint_dir).glob("*.pt"))
+    if not candidates:
+        raise FileNotFoundError(
+            f"No se encontraron checkpoints .pt en {checkpoint_dir}."
+        )
+
+    return max(
+        candidates,
+        key=lambda path: (parse_checkpoint_step(path), path.stat().st_mtime),
+    )
+
+
 def build_evaluator_for_single_worker(
     source_path: Path,
     source_ids: list[str],
@@ -333,6 +377,12 @@ def main() -> None:
         print("cycles=0", flush=True)
         return
 
+    checkpoint_path = resolve_checkpoint_path(
+        checkpoint_path=args.checkpoint_path,
+        checkpoint_dir=args.checkpoint_dir,
+    )
+    args.checkpoint_path = str(checkpoint_path)
+
     mcts_config = MCTSConfig(
         num_simulations=args.mcts_simulations,
         c_puct=args.c_puct,
@@ -345,6 +395,7 @@ def main() -> None:
         max_seed_states=args.max_seed_states,
         seed_state_probability=args.seed_state_probability,
         mcts_config=mcts_config,
+        tail_window_size=args.tail_window_size,
         mcts_policy_weight=args.mcts_policy_weight,
         reweighted_policy_config=ReweightedPolicyConfig(
             policy_weight=args.reweighted_policy_weight,
@@ -352,7 +403,7 @@ def main() -> None:
     )
 
     centralized_config = CentralizedEvaluatorConfig(
-        checkpoint_path=args.checkpoint_path,
+        checkpoint_path=checkpoint_path,
         device=args.device,
         max_batch_size=args.evaluator_batch_size,
         batch_wait_s=args.evaluator_batch_wait,
@@ -364,11 +415,11 @@ def main() -> None:
         evaluator = build_evaluator_for_single_worker(
             source_path=source_path,
             source_ids=selected_ids,
-            checkpoint_path=args.checkpoint_path,
+            checkpoint_path=checkpoint_path,
             device=args.device,
         )
 
-    current_checkpoint_path = Path(args.checkpoint_path)
+    current_checkpoint_path = checkpoint_path
 
     def on_cycle_ready(cycle_report):
         nonlocal current_checkpoint_path
@@ -389,7 +440,8 @@ def main() -> None:
                 checkpoint_dir=args.checkpoint_dir,
                 device=args.device,
                 batch_size=args.learner_batch_size,
-                train_steps=args.learner_steps,
+                sample_start_index=cycle_report.sample_start_index,
+                sample_end_index=cycle_report.sample_end_index,
                 learning_rate=args.learner_learning_rate,
                 weight_decay=args.learner_weight_decay,
                 value_loss_weight=args.learner_value_loss_weight,
@@ -413,6 +465,9 @@ def main() -> None:
             "[mcts_generation] learner_done "
             f"checkpoint={learner_report.checkpoint_path} "
             f"global_step={learner_report.global_step} "
+            f"trained_samples={learner_report.sample_count} "
+            f"trained_steps={learner_report.trained_steps} "
+            f"last_batch_size={learner_report.last_batch_size} "
             f"loss={last_metrics.loss:.6f} "
             f"policy_loss={last_metrics.policy_loss:.6f} "
             f"value_loss={last_metrics.value_loss:.6f}",
@@ -443,12 +498,19 @@ def main() -> None:
 
     print(f"[mcts_generation] source={source_path}", flush=True)
     print(f"[mcts_generation] samples={sample_path}", flush=True)
+    print(f"[mcts_generation] checkpoint={checkpoint_path}", flush=True)
     print(f"[mcts_generation] workers={args.workers}", flush=True)
     print(f"[mcts_generation] source_trajectories={len(source_ids)}", flush=True)
     print(f"[mcts_generation] selected_trajectories={len(selected_ids)}", flush=True)
     print(f"[mcts_generation] p_mcts={args.p_mcts}", flush=True)
     print(f"[mcts_generation] start_mode={args.start_mode}", flush=True)
     print(f"[mcts_generation] train_on_cycle={args.train_on_cycle}", flush=True)
+    if args.learner_steps is not None:
+        print(
+            "[mcts_generation] warning=--learner-steps is deprecated and ignored; "
+            "steps are derived from the cycle sample count",
+            flush=True,
+        )
     if logger is not None:
         print(f"[mcts_generation] run_id={logger.run_id}", flush=True)
         print(f"[mcts_generation] reports_dir={logger.reports_dir}", flush=True)
@@ -532,6 +594,9 @@ class MCTSGenerationRunLogger:
                 "cycle_index": int(cycle_index),
                 "checkpoint_path": str(learner_report.checkpoint_path),
                 "sample_count": int(learner_report.sample_count),
+                "sample_start_index": int(learner_report.sample_start_index),
+                "sample_end_index": int(learner_report.sample_end_index),
+                "last_batch_size": int(learner_report.last_batch_size),
                 "metric": asdict(metric),
             }
             self._append_jsonl(
@@ -574,6 +639,9 @@ class MCTSGenerationRunLogger:
             "global_step": int(learner_report.global_step),
             "trained_steps": int(learner_report.trained_steps),
             "sample_count": int(learner_report.sample_count),
+            "sample_start_index": int(learner_report.sample_start_index),
+            "sample_end_index": int(learner_report.sample_end_index),
+            "last_batch_size": int(learner_report.last_batch_size),
             "last_metric": asdict(last_metric) if last_metric is not None else None,
         }
 

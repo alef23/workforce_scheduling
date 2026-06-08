@@ -14,6 +14,7 @@ SCHEMA_VERSION = "1.1"
 DEFAULT_POLICY_WEIGHT = 1.0
 DEFAULT_SAMPLE_SOURCE = "unknown"
 DEFAULT_MODEL_VERSION = -1
+TRAINED_UNTIL_ATTR = "trained_until"
 
 
 @dataclass(frozen=True)
@@ -41,11 +42,33 @@ class SampleBuffer:
             self.samples_group = self.root.create_group("samples")
             self.samples_group.attrs["schema_version"] = SCHEMA_VERSION
             self.samples_group.attrs["length"] = 0
+            self.samples_group.attrs[TRAINED_UNTIL_ATTR] = 0
         else:
             self.samples_group = self.root["samples"]
+            if mode != "r" and TRAINED_UNTIL_ATTR not in self.samples_group.attrs:
+                self.samples_group.attrs[TRAINED_UNTIL_ATTR] = len(self)
 
     def __len__(self) -> int:
         return int(self.samples_group.attrs.get("length", 0))
+
+    @property
+    def trained_until(self) -> int:
+        if TRAINED_UNTIL_ATTR not in self.samples_group.attrs:
+            return len(self)
+        return int(self.samples_group.attrs[TRAINED_UNTIL_ATTR])
+
+    def mark_trained_until(self, sample_index: int) -> None:
+        sample_index = int(sample_index)
+        current = self.trained_until
+        if sample_index < current:
+            raise ValueError(
+                f"trained_until no puede retroceder: current={current}, new={sample_index}."
+            )
+        if sample_index > len(self):
+            raise ValueError(
+                f"trained_until no puede superar length={len(self)}: {sample_index}."
+            )
+        self.samples_group.attrs[TRAINED_UNTIL_ATTR] = sample_index
 
     def build_from_trajectory_buffer(
         self,
@@ -62,6 +85,7 @@ class SampleBuffer:
             del self.root["samples"]
         self.samples_group = self.root.create_group("samples")
         self.samples_group.attrs["schema_version"] = SCHEMA_VERSION
+        self.samples_group.attrs[TRAINED_UNTIL_ATTR] = 0
 
         records = list(
             trajectory_buffer.iter_trajectories(trajectory_ids=trajectory_ids)
@@ -73,6 +97,7 @@ class SampleBuffer:
             self._create_array(self.samples_group, name, data, chunks=chunks)
 
         self.samples_group.attrs["length"] = int(arrays["action_id"].shape[0])
+        self.samples_group.attrs[TRAINED_UNTIL_ATTR] = 0
         return len(self)
 
     def iter_batches(

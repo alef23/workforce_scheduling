@@ -80,6 +80,7 @@ class MCTSGenerationWorker:
             max_seed_states=self.config.max_seed_states,
             seed_state_probability=self.config.seed_state_probability,
             rng=rng,
+            tail_window_size=self.config.tail_window_size,
         )
 
         generated: list[GeneratedSampleTrajectory] = []
@@ -114,6 +115,7 @@ class MCTSGenerationWorker:
                 "source_trajectory_id": job.source_trajectory_id,
                 "source_step_index": int(source_step_index),
                 "start_mode": self.config.start_mode.value,
+                "tail_window_size": self.config.tail_window_size,
                 "policy_weight": float(self.config.mcts_policy_weight),
                 "final_reward": float(final_reward),
             }

@@ -9,6 +9,8 @@ from modules.storage.sample_buffer import SampleBatch
 
 
 class _FakeSampleBuffer:
+    loaded_indices = []
+
     def __init__(self, *_args, **_kwargs) -> None:
         self.batch = _build_batch()
 
@@ -17,6 +19,7 @@ class _FakeSampleBuffer:
 
     def load_batch(self, indices):
         idx = np.asarray(indices, dtype=int)
+        type(self).loaded_indices.extend(idx.tolist())
         return SampleBatch(
             actions=self.batch.actions[idx],
             X={key: _take(value, idx) for key, value in self.batch.X.items()},
@@ -35,6 +38,7 @@ def test_resnet_sample_learner_trains_and_saves_checkpoint(
     from modules.learning import resnet_sample_learner as learner_module
 
     monkeypatch.setattr(learner_module, "SampleBuffer", _FakeSampleBuffer)
+    _FakeSampleBuffer.loaded_indices = []
 
     model_config = {
         "hidden_channels": 4,
@@ -60,7 +64,6 @@ def test_resnet_sample_learner_trains_and_saves_checkpoint(
             checkpoint_dir=tmp_path / "checkpoints",
             device="cpu",
             batch_size=2,
-            train_steps=2,
             learning_rate=1e-3,
             seed=123,
         )
@@ -71,13 +74,73 @@ def test_resnet_sample_learner_trains_and_saves_checkpoint(
     assert report.global_step == 2
     assert report.trained_steps == 2
     assert report.sample_count == 4
+    assert report.sample_start_index == 0
+    assert report.sample_end_index == 4
+    assert report.last_batch_size == 2
     assert len(report.metrics) == 2
+    assert sorted(_FakeSampleBuffer.loaded_indices) == [0, 1, 2, 3]
     assert Path(report.checkpoint_path).exists()
 
     checkpoint = torch.load(report.checkpoint_path, map_location="cpu")
     assert checkpoint["training_state"]["global_step"] == 2
     assert checkpoint["training_state"]["trained"] is True
     assert checkpoint["model_config"] == model_config
+
+
+def test_learner_uses_cycle_range_once_and_keeps_partial_batch(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from modules.learning import resnet_sample_learner as learner_module
+
+    class RangeSampleBuffer(_FakeSampleBuffer):
+        loaded_indices = []
+
+        def __len__(self) -> int:
+            return 7
+
+        def load_batch(self, indices):
+            idx = np.asarray(indices, dtype=int)
+            type(self).loaded_indices.extend(idx.tolist())
+            base = _build_batch(n=len(idx))
+            return base
+
+    monkeypatch.setattr(learner_module, "SampleBuffer", RangeSampleBuffer)
+    model_config = {
+        "hidden_channels": 4,
+        "num_res_blocks": 1,
+        "policy_channels": 1,
+        "value_channels": 1,
+        "value_hidden_dim": 8,
+    }
+    initial_checkpoint = tmp_path / "initial.pt"
+    torch.save(
+        {
+            "model_state_dict": WorkforceResNet(**model_config).state_dict(),
+            "model_config": model_config,
+            "training_state": {"global_step": 0, "trained": False},
+        },
+        initial_checkpoint,
+    )
+
+    report = ResNetSampleLearner(
+        ResNetLearnerConfig(
+            sample_buffer_path="unused.zarr",
+            checkpoint_path=initial_checkpoint,
+            checkpoint_dir=tmp_path / "checkpoints",
+            device="cpu",
+            batch_size=2,
+            sample_start_index=2,
+            sample_end_index=7,
+            seed=123,
+        )
+    ).train()
+
+    assert report.sample_count == 5
+    assert report.trained_steps == 3
+    assert report.last_batch_size == 1
+    assert sorted(RangeSampleBuffer.loaded_indices) == [2, 3, 4, 5, 6]
+    assert len(RangeSampleBuffer.loaded_indices) == len(set(RangeSampleBuffer.loaded_indices))
 
 
 def test_policy_loss_uses_policy_weight() -> None:
@@ -100,8 +163,7 @@ def test_policy_loss_uses_policy_weight() -> None:
     assert torch.isclose(loss, torch.tensor(0.75 * np.log(2), dtype=torch.float32))
 
 
-def _build_batch() -> SampleBatch:
-    n = 4
+def _build_batch(n: int = 4) -> SampleBatch:
     policy = np.zeros((n, 55), dtype=np.float32)
     policy[:, 0] = 1.0
     return SampleBatch(
@@ -123,7 +185,10 @@ def _build_batch() -> SampleBatch:
         Y={
             "policy": policy,
             "value": np.linspace(0.0, 0.3, n, dtype=np.float32),
-            "policy_weight": np.array([1.0, 0.5, 1.0, 0.5], dtype=np.float32),
+            "policy_weight": np.resize(
+                np.array([1.0, 0.5], dtype=np.float32),
+                n,
+            ),
         },
         metadata={
             "trajectory_id": np.array(["t0", "t1", "t2", "t3"]),

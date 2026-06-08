@@ -1,8 +1,10 @@
 import random
 
 import numpy as np
+import pytest
 
-from modules.mcts_generation import MCTSStartMode
+from modules.mcts.mcts_schemas import MCTSConfig
+from modules.mcts_generation import MCTSGenerationConfig, MCTSStartMode
 from modules.mcts_generation.policies import build_reweighted_policy
 from modules.mcts_generation.seed_selection import select_seed_step_indices
 
@@ -65,3 +67,51 @@ def test_seed_selection_backward_skips_terminal_and_includes_initial() -> None:
     )
 
     assert indices == [0, 8, 7, 6]
+
+
+def test_tail_forward_samples_window_before_terminal_in_order() -> None:
+    indices = select_seed_step_indices(
+        trajectory_length=10,
+        start_mode=MCTSStartMode.TAIL_FORWARD_SAMPLED,
+        max_seed_states=3,
+        seed_state_probability=1.0,
+        rng=random.Random(123),
+        tail_window_size=4,
+    )
+
+    assert indices == [0, 5, 6, 7]
+
+
+def test_tail_forward_caps_window_at_first_additional_state() -> None:
+    indices = select_seed_step_indices(
+        trajectory_length=5,
+        start_mode=MCTSStartMode.TAIL_FORWARD_SAMPLED,
+        max_seed_states=10,
+        seed_state_probability=1.0,
+        rng=random.Random(123),
+        tail_window_size=30,
+    )
+
+    assert indices == [0, 1, 2, 3]
+
+
+def test_tail_forward_requires_window_size() -> None:
+    with pytest.raises(ValueError, match="tail_window_size"):
+        select_seed_step_indices(
+            trajectory_length=10,
+            start_mode=MCTSStartMode.TAIL_FORWARD_SAMPLED,
+            max_seed_states=3,
+            seed_state_probability=1.0,
+            rng=random.Random(123),
+        )
+
+
+def test_tail_forward_config_requires_window_size() -> None:
+    with pytest.raises(ValueError, match="tail_window_size"):
+        MCTSGenerationConfig(
+            p_mcts=1.0,
+            start_mode=MCTSStartMode.TAIL_FORWARD_SAMPLED,
+            max_seed_states=3,
+            seed_state_probability=1.0,
+            mcts_config=MCTSConfig(num_simulations=1, c_puct=1.0),
+        )

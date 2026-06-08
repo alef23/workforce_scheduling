@@ -469,6 +469,7 @@ Modos MCTS:
 initial_only       toma solo el estado inicial
 forward_sampled   toma estado inicial + hasta N estados hacia adelante
 backward_sampled  toma estado inicial + hasta N estados hacia atras, sin terminal
+tail_forward_sampled toma estado inicial + candidatos T-n hasta T-1
 ```
 
 Ejemplo con semillas adicionales hacia el final:
@@ -500,11 +501,9 @@ uv run python scripts/generate_mcts_samples.py \
   --mcts-simulations 16 \
   --sample-limit-per-cycle 2000 \
   --train-on-cycle \
-  --learner-steps 50 \
   --learner-batch-size 64 \
   --learner-learning-rate 0.0001 \
   --learner-weight-decay 0.0001 \
-  --checkpoint-path modules/evaluators/resnet/checkpoints/workforce_resnet_000.pt \
   --checkpoint-dir modules/evaluators/resnet/checkpoints \
   --device cuda \
   --overwrite-samples
@@ -517,9 +516,13 @@ Que sucede:
 - el orquestador guarda samples;
 - al llegar a `sample_limit_per_cycle`, se deja de asignar trabajo nuevo;
 - workers activos terminan sus trayectorias;
-- `ResNetSampleLearner` entrena desde el `SampleBuffer`;
+- `ResNetSampleLearner` mezcla una vez los samples nuevos del ciclo;
+- arma batches sin reposicion hasta consumirlos todos;
+- la cantidad de steps se deriva como `ceil(samples_del_ciclo / batch_size)`;
+- el ultimo batch puede ser parcial;
 - se guarda un checkpoint `workforce_resnet_<global_step>.pt`;
 - el evaluator recarga pesos;
+- el rango queda marcado como entrenado y no se reutiliza en ciclos posteriores;
 - continua el siguiente ciclo.
 
 Con GPU local de 8GB, el modo recomendado es:
@@ -527,7 +530,7 @@ Con GPU local de 8GB, el modo recomendado es:
 - `--workers > 1` con evaluador centralizado;
 - no crear evaluadores por worker;
 - mantener entrenamiento y reload sincronicos;
-- empezar con pocos `mcts-simulations` y pocos `learner-steps`;
+- empezar con pocos `mcts-simulations` y ciclos de samples moderados;
 - subir gradualmente si la memoria y el tiempo son estables.
 
 ### Paso 4b. Evaluar el test set fijo con MCTS
@@ -745,7 +748,6 @@ uv run python scripts/generate_mcts_samples.py \
   --mcts-simulations 32 \
   --sample-limit-per-cycle 10000 \
   --train-on-cycle \
-  --learner-steps 100 \
   --learner-batch-size 64 \
   --device cuda
 ```
@@ -757,7 +759,7 @@ Ajustes manuales esperados a medida que aprende el modelo:
 - aumentar `max_seed_states`;
 - aumentar `mcts-simulations`;
 - aumentar `sample_limit_per_cycle`;
-- ajustar `learner-steps`, `batch-size` y learning rate.
+- ajustar `batch-size` y learning rate.
 
 ## Mapa operativo de entrenamiento
 
@@ -769,19 +771,19 @@ Ajustes manuales esperados a medida que aprende el modelo:
 | 1 | Simulacion de demanda raw | Genera trayectorias resueltas a partir de cobertura base, ruido de demanda y replay con `WorkforceEngine`. Estas trayectorias sirven como base factible. | `scripts/generate_raw_demand_dataset.py` | n/a | `datasets/raw/trajectories.zarr` | `n_samples`, `--workers`, `--allowed-entry-hours`, `--closing-hour`, `--noise-k-max`, `--noise-k-lambda`, `--mod-*-max` | Progreso en consola `[dataset_generation]`. Metadata por trayectoria en Zarr. |
 | 2 | Simulacion stock adjusted | Toma trayectorias raw y reduce stock con probabilidad `p_stock` para inducir casos con `expansion_mode`. Si no reduce, copia la raw directa. | `scripts/generate_stock_adjusted_dataset.py` | `datasets/raw/trajectories.zarr` | `datasets/derived/stock_adjusted/trajectories.zarr` | `--workers 10`, `--p-stock 0.25`, `--skip-existing`, `--overwrite` | Progreso en consola. Metadata: `stock_was_reduced`, `has_expansion_mode`, `first_expansion_step`. |
 | 3 | Generacion MCTS + reweighted | Procesa trayectorias stock. Con probabilidad `p_mcts` genera trayectorias MCTS; con `1-p_mcts` recalcula policy artificial con menor `policy_weight`. El orquestador aplana todo en `SampleBuffer`. | `scripts/generate_mcts_samples.py` | `datasets/derived/stock_adjusted/trajectories.zarr` | `datasets/samples/samples.zarr` | `--workers 10`, `--p-mcts`, `--start-mode`, `--max-seed-states`, `--seed-state-probability`, `--mcts-simulations`, `--evaluator-batch-wait 0` | `datasets/reports/mcts_generation_runs.jsonl`, `mcts_generation_cycles.jsonl`; progreso `[mcts_generation]`. |
-| 4 | Ciclo MCTS + learner + reload | Igual que el paso 3, pero al llegar a `sample_limit_per_cycle` pausa asignacion, espera workers activos, entrena la ResNet, guarda checkpoint y recarga evaluator. | `scripts/generate_mcts_samples.py --train-on-cycle` | `stock_adjusted` + `samples.zarr` acumulado | `samples.zarr` + checkpoints `.pt` | `--sample-limit-per-cycle`, `--learner-steps`, `--learner-batch-size`, `--learner-learning-rate`, `--checkpoint-dir`, `--device cuda` | `mcts_generation_learner_steps.jsonl`, `cycle_ready`, `learner_done`, checkpoints `workforce_resnet_<step>.pt`. |
+| 4 | Ciclo MCTS + learner + reload | Al llegar a `sample_limit_per_cycle`, pausa asignacion, espera workers activos y entrena una sola vez los samples nuevos del ciclo, sin reposicion. Luego guarda checkpoint y recarga evaluator. | `scripts/generate_mcts_samples.py --train-on-cycle` | `stock_adjusted` + rango pendiente de `samples.zarr` | `samples.zarr` + checkpoints `.pt` | `--sample-limit-per-cycle`, `--learner-batch-size`, `--learner-learning-rate`, `--checkpoint-dir`, `--device cuda` | `mcts_generation_learner_steps.jsonl`, rangos `[sample_start_index, sample_end_index)`, `cycle_ready`, `learner_done`. |
 | 5 | Evaluacion del test set | Corre MCTS desde cada estado inicial del test set usando el ultimo checkpoint o uno indicado. Guarda trayectorias completas y metricas por corrida. | `scripts/evaluate_test_set_mcts.py` | `datasets/test/initial_states.zarr` | `datasets/evaluation/mcts_test/trajectories.zarr` | `--workers 10`, `--mcts-simulations 300`, `--evaluator-batch-size 10`, `--evaluator-batch-wait 0`, `--device cuda` | `datasets/evaluation/mcts_test/reports/trajectories.jsonl`, `run_summary.json`, `runs.jsonl`. |
 | 6 | Dashboard del modelo | Construye el HTML liviano con runs, ciclos, losses, checkpoints y evaluación MCTS. | `scripts/build_model_dashboard.py` | logs JSON/JSONL + checkpoints | `datasets/reports/model_dashboard.html` | `--reports-dir`, `--checkpoint-dir`, `--test-eval-reports-dir` | No abre buffers Zarr; apto para ejecutar durante entrenamiento. |
 | 7 | Dashboard Zarr | Construye el visor de buffers y el explorador estado por estado. | `scripts/build_zarr_dashboard.py` | buffers raw, stock, samples y test MCTS | `datasets/reports/zarr_dashboard.html` | `--max-sample-scan`, `--max-trajectory-preview`, `--explorer-trajectory-count` | Lectura intensiva; puede competir por I/O con el entrenamiento. |
 
 ### Plan sugerido de ciclos MCTS
 
-| Fase | Objetivo | `p_mcts` | `start_mode` | `max_seed_states` | `seed_state_probability` | `mcts-simulations` | `sample_limit_per_cycle` | `learner-steps` | Evaluacion recomendada |
+| Fase | Objetivo | `p_mcts` | `start_mode` | `max_seed_states` | `seed_state_probability` | `mcts-simulations` | `sample_limit_per_cycle` | Batch size | Evaluacion recomendada |
 |---:|---|---:|---|---:|---:|---:|---:|---:|---|
-| 1 | Aprender finales y estabilizar value | `0.15` | `backward_sampled` | `1` | `0.40` | `32` | `8000` | `80` | 100 samples, 100-300 sims |
-| 2 | Aumentar MCTS cerca del final | `0.25` | `backward_sampled` | `2` | `0.50` | `64` | `12000` | `100` | 100 samples, 300 sims |
-| 3 | Balancear final e inicio | `0.35` | `forward_sampled` | `2` | `0.35` | `96` | `16000` | `120` | 100 samples, 300 sims |
-| 4 | Dar mas libertad a MCTS | `0.50` | `forward_sampled` | `3` | `0.40` | `128` | `20000` | `150` | 100 samples, 300-500 sims |
+| 1 | Aprender finales y estabilizar value | `0.15` | `backward_sampled` | `1` | `0.40` | `32` | `8000` | `128` | 100 samples, 100-300 sims |
+| 2 | Aumentar MCTS cerca del final | `0.25` | `backward_sampled` | `2` | `0.50` | `64` | `12000` | `128` | 100 samples, 300 sims |
+| 3 | Balancear final e inicio | `0.35` | `forward_sampled` | `2` | `0.35` | `96` | `16000` | `128` | 100 samples, 300 sims |
+| 4 | Dar mas libertad a MCTS | `0.50` | `forward_sampled` | `3` | `0.40` | `128` | `20000` | `128` | 100 samples, 300-500 sims |
 
 ### Parametros por etapa
 
@@ -801,8 +803,8 @@ Ajustes manuales esperados a medida que aprende el modelo:
 | `--mcts-simulations` | MCTS training | `32 -> 128` | Simulaciones por decision. | Policies MCTS mas informadas. | Es uno de los mayores multiplicadores de tiempo. |
 | `--mcts-simulations` | evaluacion | `300` | Profundidad de evaluacion contra test set. | Medicion mas robusta de reward final. | `500` puede ser caro; usar para evaluaciones puntuales. |
 | `--sample-limit-per-cycle` | MCTS + learner | `8000 -> 20000` | Samples antes de cerrar ciclo. | Controla frecuencia de entrenamiento/reload. | Al alcanzarlo, deja de asignar jobs y espera activos; puede parecer pausa. |
-| `--learner-steps` | learner | `80 -> 150` | Updates por ciclo. | Mas aprendizaje por ciclo. | Demasiados steps pueden sobreajustar al buffer reciente. |
-| `--learner-batch-size` | learner | `64` | Batch de entrenamiento. | Estable con GPU 8GB. | Subirlo aumenta VRAM. |
+| `--learner-steps` | learner | deprecated | Se acepta por compatibilidad pero se ignora. | Los steps se derivan automaticamente. | Eliminarlo de comandos nuevos. |
+| `--learner-batch-size` | learner | `128` | Tamaño de cada batch sin reposicion. | Cada sample del ciclo se usa exactamente una vez. | El ultimo batch puede ser menor; subirlo aumenta VRAM. |
 | `--evaluator-batch-size` | MCTS / eval | igual a `--workers` | Maximo batch del evaluator centralizado. | Mejor uso de GPU sin esperar batches enormes. | Si es muy alto con pocos workers no aporta. |
 | `--evaluator-batch-wait` | MCTS / eval | `0` | Espera para juntar requests. | Reduce latencia de MCTS sincrono. | `0.01` puede acumular mucha espera. |
 | `--request-timeout` | MCTS / eval | `120` | Timeout de requests al evaluator. | Evita bloqueos silenciosos si evaluator muere. | Debe ser mayor que una inferencia razonable bajo carga. |
@@ -840,7 +842,7 @@ Ajustes manuales esperados a medida que aprende el modelo:
 | `--overwrite` | raw, stock, test set, evaluacion | desactivado | Recrea el buffer destino. | Borra/recrea el output del script correspondiente. |
 | `--progress-interval` | raw, stock, MCTS, evaluacion | varia | Frecuencia de logs de progreso. | No cambia la ejecucion, solo la impresion. |
 | `--device` | MCTS, evaluacion | `auto` o indicado | Device del evaluador ResNet. | Valores validos: `auto`, `cpu`, `cuda`. No usar `gpu`. |
-| `--checkpoint-path` | MCTS, evaluacion | varia | Checkpoint ResNet a cargar. | En evaluacion, si no se pasa, usa el `.pt` con mayor step numerico. |
+| `--checkpoint-path` | MCTS, evaluacion | ultimo checkpoint | Checkpoint ResNet a cargar. | Si no se pasa, usa el `.pt` con mayor step numerico dentro de `--checkpoint-dir`. |
 | `--checkpoint-dir` | MCTS, evaluacion | `modules/evaluators/resnet/checkpoints` | Directorio de checkpoints. | El learner escribe nuevos `.pt` ahi. |
 
 ### Ruido y datos raw
@@ -874,17 +876,18 @@ Ajustes manuales esperados a medida que aprende el modelo:
 | `--sample-path` | `datasets/samples/samples.zarr` | SampleBuffer destino. | El orquestador aplana estados `X` e `Y`. |
 | `--n-trajectories` | `None` | Cantidad de trayectorias stock a procesar. | Si queda en `None`, procesa todas. |
 | `--p-mcts` | `0.2` | Probabilidad de usar MCTS por trayectoria stock. | Con `1 - p_mcts`, solo recalcula policy reweighted. |
-| `--start-mode` | `initial_only` | Estados desde los que arranca MCTS. | Opciones: `initial_only`, `forward_sampled`, `backward_sampled`. |
+| `--start-mode` | `initial_only` | Estados desde los que arranca MCTS. | Opciones: `initial_only`, `forward_sampled`, `backward_sampled`, `tail_forward_sampled`. |
 | `--max-seed-states` | `0` | Cantidad maxima de estados adicionales. | Ademas del estado inicial en modos sampled. |
-| `--seed-state-probability` | `0.0` | Probabilidad de seleccionar cada estado candidato. | Solo aplica en `forward_sampled` y `backward_sampled`. |
+| `--seed-state-probability` | `0.0` | Probabilidad de seleccionar cada estado candidato. | Aplica en todos los modos sampled. |
+| `--tail-window-size` | `None` | Ventana anterior al terminal. | Requerido por `tail_forward_sampled`; recorre `T-n` hasta `T-1`. |
 | `--mcts-simulations` | `16` | Simulaciones por decision MCTS. | Aumentarlo mejora busqueda pero multiplica tiempo. |
 | `--c-puct` | `1.0` | Exploracion PUCT. | Mas alto explora mas acciones con prior. |
 | `--mcts-policy-weight` | `1.0` | Peso de policy loss para samples MCTS. | Solo afecta policy loss durante entrenamiento. |
 | `--reweighted-policy-weight` | `0.5` | Peso de policy loss para samples reweighted. | Baja importancia de policies artificiales. |
 | `--sample-limit-per-cycle` | `None` | Samples maximos antes de cerrar ciclo. | Al alcanzarlo, deja de asignar jobs nuevos y espera jobs activos. |
 | `--train-on-cycle` | desactivado | Entrena learner al cerrar cada ciclo. | Luego recarga pesos del evaluador. |
-| `--learner-steps` | `100` | Steps de entrenamiento por ciclo. | Solo aplica con `--train-on-cycle`. |
-| `--learner-batch-size` | `64` | Batch size del learner. | Batches aleatorios desde `SampleBuffer`. |
+| `--learner-steps` | `None` | Parametro deprecated e ignorado. | Los steps son `ceil(samples_del_ciclo / batch_size)`. |
+| `--learner-batch-size` | `64` | Batch size del learner. | Shuffle unico del rango del ciclo, sin reposicion. |
 | `--learner-learning-rate` | `1e-4` | Learning rate. | Solo aplica con `--train-on-cycle`. |
 | `--learner-weight-decay` | `1e-4` | Weight decay. | Regularizacion del optimizer. |
 | `--learner-value-loss-weight` | `1.0` | Peso global de value loss. | No usa `policy_weight`. |

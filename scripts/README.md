@@ -265,7 +265,6 @@ uv run python scripts/generate_mcts_samples.py \
   --p-mcts 0.2 \
   --start-mode initial_only \
   --mcts-simulations 16 \
-  --checkpoint-path modules/evaluators/resnet/checkpoints/workforce_resnet_000.pt \
   --device cuda \
   --sample-limit-per-cycle 10000 \
   --overwrite-samples
@@ -280,16 +279,35 @@ uv run python scripts/generate_mcts_samples.py \
   --p-mcts 0.2 \
   --sample-limit-per-cycle 10000 \
   --train-on-cycle \
-  --learner-steps 100 \
   --learner-batch-size 64 \
-  --checkpoint-path modules/evaluators/resnet/checkpoints/workforce_resnet_000.pt \
   --checkpoint-dir modules/evaluators/resnet/checkpoints \
   --device cuda
 ```
 
+Si no se pasa `--checkpoint-path`, cada nueva ejecucion selecciona el `.pt`
+con mayor step numerico dentro de `--checkpoint-dir`. Un path explicito sigue
+teniendo prioridad. El checkpoint resuelto se imprime como
+`[mcts_generation] checkpoint=...` y queda registrado en los logs de la corrida.
+
 Con `--train-on-cycle`, el orquestador espera a que los workers terminen sus
-trayectorias activas, el learner entrena desde el `SampleBuffer`, guarda un
-checkpoint y devuelve ese path para que el evaluator recargue pesos.
+trayectorias activas. El learner mezcla una vez el rango nuevo del ciclo y lo
+consume en batches sin reposicion. Los steps se calculan como
+`ceil(samples_del_ciclo / learner_batch_size)`. Tras guardar el checkpoint y
+recargar el evaluator, ese rango queda marcado como entrenado y no se reutiliza.
+
+Para concentrar las semillas MCTS en una ventana anterior al terminal:
+
+```bash
+uv run python scripts/generate_mcts_samples.py \
+  --start-mode tail_forward_sampled \
+  --tail-window-size 30 \
+  --max-seed-states 15 \
+  --seed-state-probability 0.15
+```
+
+Si el terminal esta en `T`, se evaluan en orden los candidatos desde `T-30`
+hasta `T-1`. El terminal queda excluido y el estado inicial se agrega siempre
+como semilla independiente.
 
 Logs persistentes:
 

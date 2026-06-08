@@ -53,6 +53,8 @@ class MCTSCycleReport:
     generated_trajectories: int
     used_mcts_jobs: int
     reweighted_jobs: int
+    sample_start_index: int = 0
+    sample_end_index: int = 0
 
 
 @dataclass
@@ -140,7 +142,12 @@ class MCTSGenerationOrchestrator:
         reweighted_jobs = 0
         errors: list[str] = []
         cycle_reports: list[MCTSCycleReport] = []
-        cycle_stats = _CycleStats(cycle_index=0)
+        cycle_start_index = sample_buffer.trained_until
+        cycle_stats = _CycleStats(
+            cycle_index=0,
+            sample_start_index=cycle_start_index,
+            saved_samples=len(sample_buffer) - cycle_start_index,
+        )
 
         for job in job_list:
             try:
@@ -175,11 +182,16 @@ class MCTSGenerationOrchestrator:
             )
 
             if self._cycle_limit_reached(cycle_stats):
-                cycle_reports.append(self._close_cycle(cycle_stats, None))
-                cycle_stats = _CycleStats(cycle_index=cycle_stats.cycle_index + 1)
+                cycle_reports.append(
+                    self._close_cycle(cycle_stats, None, sample_buffer)
+                )
+                cycle_stats = _CycleStats(
+                    cycle_index=cycle_stats.cycle_index + 1,
+                    sample_start_index=len(sample_buffer),
+                )
 
         if cycle_stats.has_activity:
-            cycle_reports.append(self._close_cycle(cycle_stats, None))
+            cycle_reports.append(self._close_cycle(cycle_stats, None, sample_buffer))
 
         self._print_progress(
             processed_jobs=completed_jobs + failed_jobs,
@@ -295,7 +307,12 @@ class MCTSGenerationOrchestrator:
         reweighted_jobs = 0
         errors: list[str] = []
         cycle_reports: list[MCTSCycleReport] = []
-        cycle_stats = _CycleStats(cycle_index=0)
+        cycle_start_index = sample_buffer.trained_until
+        cycle_stats = _CycleStats(
+            cycle_index=0,
+            sample_start_index=cycle_start_index,
+            saved_samples=len(sample_buffer) - cycle_start_index,
+        )
         next_job_index = 0
         in_flight_jobs = 0
 
@@ -351,9 +368,13 @@ class MCTSGenerationOrchestrator:
                                 evaluator_request_queue,
                                 orchestrator_response_queue,
                             ),
+                            sample_buffer,
                         )
                     )
-                    cycle_stats = _CycleStats(cycle_index=cycle_stats.cycle_index + 1)
+                    cycle_stats = _CycleStats(
+                        cycle_index=cycle_stats.cycle_index + 1,
+                        sample_start_index=len(sample_buffer),
+                    )
                     for _ in worker_processes:
                         if not submit_next_job():
                             break
@@ -378,6 +399,7 @@ class MCTSGenerationOrchestrator:
                         evaluator_request_queue,
                         orchestrator_response_queue,
                     ),
+                    sample_buffer,
                 )
             )
 
@@ -439,14 +461,16 @@ class MCTSGenerationOrchestrator:
         self,
         cycle_stats: "_CycleStats",
         evaluator_control: tuple | None,
+        sample_buffer: SampleBuffer,
     ) -> MCTSCycleReport:
-        report = cycle_stats.to_report()
+        report = cycle_stats.to_report(sample_end_index=len(sample_buffer))
         checkpoint_path = None
         if self.on_cycle_ready is not None:
             checkpoint_path = self.on_cycle_ready(report)
 
         if checkpoint_path is not None:
             self._reload_evaluator_weights(checkpoint_path, evaluator_control)
+            sample_buffer.mark_trained_until(report.sample_end_index)
 
         return report
 
@@ -523,6 +547,7 @@ class _WorkerError:
 @dataclass
 class _CycleStats:
     cycle_index: int
+    sample_start_index: int = 0
     completed_jobs: int = 0
     failed_jobs: int = 0
     saved_samples: int = 0
@@ -534,7 +559,7 @@ class _CycleStats:
     def has_activity(self) -> bool:
         return self.completed_jobs > 0 or self.failed_jobs > 0
 
-    def to_report(self) -> MCTSCycleReport:
+    def to_report(self, sample_end_index: int) -> MCTSCycleReport:
         return MCTSCycleReport(
             cycle_index=self.cycle_index,
             completed_jobs=self.completed_jobs,
@@ -543,6 +568,8 @@ class _CycleStats:
             generated_trajectories=self.generated_trajectories,
             used_mcts_jobs=self.used_mcts_jobs,
             reweighted_jobs=self.reweighted_jobs,
+            sample_start_index=self.sample_start_index,
+            sample_end_index=int(sample_end_index),
         )
 
 

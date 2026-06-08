@@ -30,6 +30,14 @@ Este modulo define las piezas base para el futuro worker MCTS:
 - selecciona hasta `max_seed_states` estados adicionales con probabilidad
   `seed_state_probability`.
 
+`tail_forward_sampled`:
+
+- incluye siempre el estado inicial;
+- requiere `tail_window_size=n`;
+- si `T` es el indice terminal, recorre `T-n, T-n+1, ..., T-1`;
+- selecciona hasta `max_seed_states` estados adicionales con probabilidad
+  `seed_state_probability`.
+
 Los indices seleccionados son puntos de partida. Cada trayectoria MCTS generada
 desde esos estados debe continuar hasta terminalidad.
 

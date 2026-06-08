@@ -346,11 +346,14 @@ def summarize_sample_buffer(
         root = zarr.open_group(store=str(path), mode="r")
         group = root["samples"]
         length = int(group.attrs.get("length", 0))
+        trained_until = int(group.attrs.get("trained_until", length))
         if length <= 0:
             return {
                 "exists": True,
                 "path": str(path),
                 "length": 0,
+                "trained_until": trained_until,
+                "pending_training": 0,
             }
 
         scan_count = min(length, int(max_scan))
@@ -392,6 +395,8 @@ def summarize_sample_buffer(
             "exists": True,
             "path": str(path),
             "length": length,
+            "trained_until": trained_until,
+            "pending_training": max(0, length - trained_until),
             "scan_count": scan_count,
             "scan_limited": scan_limited,
             "sample_source_counts": dict(sample_source_counts),
@@ -1009,6 +1014,13 @@ def shared_dashboard_javascript() -> str:
     return r"""
     const CHART_STATE = {};
 
+    function resetChartRanges() {
+      Object.values(CHART_STATE).forEach(state => {
+        state.start = 0;
+        state.end = Number.MAX_SAFE_INTEGER;
+      });
+    }
+
     function escapeHtml(value) {
       return String(value ?? '')
         .replaceAll('&', '&amp;')
@@ -1152,9 +1164,23 @@ def shared_dashboard_javascript() -> str:
           return points ? `<polyline points="${points}" fill="none" stroke="${item.color}" stroke-width="2.5"/>` : '';
         })
       ).join('');
+      const runSeparators = visibleRows.map((row, index) => {
+        const previous = visibleRows[index - 1];
+        if (index > 0 && previous?.run_id === row.run_id) return '';
+        const separatorX = x(index);
+        const line = index === 0 ? '' : `
+          <line x1="${separatorX}" y1="${pad}" x2="${separatorX}" y2="${height-pad}"
+            stroke="#b54708" stroke-width="2"/>`;
+        return `<g>
+          ${line}
+          <text x="${separatorX + 5}" y="${pad + 12}" font-size="10"
+            fill="#b54708">${escapeHtml(row.run_id || 'run')}</text>
+        </g>`;
+      }).join('');
       const cycleSeparators = visibleRows.map((row, index) => {
         if (index === 0 || !row.cycle_id) return '';
         const previous = visibleRows[index - 1];
+        if (previous?.run_id !== row.run_id) return '';
         if (previous?.cycle_id === row.cycle_id) return '';
         const separatorX = x(index);
         const cycleIndex = row.cycle_index ?? row.cycle?.cycle_index;
@@ -1183,6 +1209,7 @@ def shared_dashboard_javascript() -> str:
           <line class="axis" x1="${pad}" y1="${pad}" x2="${pad}" y2="${height-pad}"/>
           <text x="4" y="${pad}">${formatSeriesValue(activeSeries[0] || {}, maxY)}</text>
           <text x="4" y="${height-pad}">${formatSeriesValue(activeSeries[0] || {}, minY)}</text>
+          ${runSeparators}
           ${cycleSeparators}
           ${paths}
           <line class="chart-cursor axis" x1="${pad}" y1="${pad}" x2="${pad}" y2="${height-pad}" style="display:none"/>
@@ -1655,11 +1682,13 @@ def render_overview_dashboard(data: dict[str, Any]) -> str:
       }}
       select.addEventListener('change', () => {{
         selectedRun = select.value;
+        resetChartRanges();
         render();
       }});
       document.getElementById('showAll').addEventListener('click', () => {{
         selectedRun = 'ALL';
         select.value = 'ALL';
+        resetChartRanges();
         render();
       }});
     }}
@@ -2048,8 +2077,11 @@ def render_overview_dashboard(data: dict[str, Any]) -> str:
         {{label: 'Ciclo', render: r => fmt(r.cycle?.cycle_index)}},
         {{label: 'Jobs', render: r => fmt(r.cycle?.completed_jobs)}},
         {{label: 'Samples', render: r => fmt(r.cycle?.saved_samples)}},
+        {{label: 'Rango', render: r => `[${{fmt(r.cycle?.sample_start_index)}}, ${{fmt(r.cycle?.sample_end_index)}})`}},
         {{label: 'MCTS', render: r => fmt(r.cycle?.used_mcts_jobs)}},
         {{label: 'Reweighted', render: r => fmt(r.cycle?.reweighted_jobs)}},
+        {{label: 'Steps', render: r => fmt(r.learner?.trained_steps)}},
+        {{label: 'Ultimo batch', render: r => fmt(r.learner?.last_batch_size)}},
         {{label: 'Step', render: r => fmt(r.learner?.global_step)}},
         {{label: 'Loss', render: r => fmt(r.learner?.last_metric?.loss)}},
       ]);
@@ -2558,11 +2590,13 @@ def render_dashboard(data: dict[str, Any]) -> str:
       }}
       select.addEventListener('change', () => {{
         selectedRun = select.value;
+        resetChartRanges();
         render();
       }});
       document.getElementById('showAll').addEventListener('click', () => {{
         selectedRun = 'ALL';
         select.value = 'ALL';
+        resetChartRanges();
         render();
       }});
     }}
@@ -2681,8 +2715,11 @@ def render_dashboard(data: dict[str, Any]) -> str:
         {{label: 'Ciclo', render: r => fmt(r.cycle?.cycle_index)}},
         {{label: 'Jobs', render: r => fmt(r.cycle?.completed_jobs)}},
         {{label: 'Samples', render: r => fmt(r.cycle?.saved_samples)}},
+        {{label: 'Rango', render: r => `[${{fmt(r.cycle?.sample_start_index)}}, ${{fmt(r.cycle?.sample_end_index)}})`}},
         {{label: 'MCTS', render: r => fmt(r.cycle?.used_mcts_jobs)}},
         {{label: 'Reweighted', render: r => fmt(r.cycle?.reweighted_jobs)}},
+        {{label: 'Steps', render: r => fmt(r.learner?.trained_steps)}},
+        {{label: 'Ultimo batch', render: r => fmt(r.learner?.last_batch_size)}},
         {{label: 'Step', render: r => fmt(r.learner?.global_step)}},
         {{label: 'Loss', render: r => fmt(r.learner?.last_metric?.loss)}},
       ]);
@@ -2711,9 +2748,9 @@ def render_dashboard(data: dict[str, Any]) -> str:
       document.getElementById('sampleBuffer').innerHTML = `
         <div class="grid">
           <div class="card"><div class="metric">${{fmt(s.length)}}</div><div class="label">Samples</div></div>
+          <div class="card"><div class="metric">${{fmt(s.trained_until)}}</div><div class="label">Samples entrenados</div></div>
+          <div class="card"><div class="metric">${{fmt(s.pending_training)}}</div><div class="label">Samples pendientes</div></div>
           <div class="card"><div class="metric">${{fmt(s.trajectory_count_scanned)}}</div><div class="label">Trajectories escaneadas</div></div>
-          <div class="card"><div class="metric">${{fmt(s.expansion_mode_count_scanned)}}</div><div class="label">Expansion samples</div></div>
-          <div class="card"><div class="metric">${{fmt(s.policy_weight?.mean)}}</div><div class="label">Policy weight medio</div></div>
         </div>
         <h3>Fuentes</h3>
         ${{table(Object.entries(counts), [

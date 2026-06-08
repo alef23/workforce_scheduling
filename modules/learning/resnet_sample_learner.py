@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -20,7 +21,8 @@ class ResNetLearnerConfig:
     checkpoint_dir: str | Path = "modules/evaluators/resnet/checkpoints"
     device: str | torch.device = "auto"
     batch_size: int = 64
-    train_steps: int = 100
+    sample_start_index: int = 0
+    sample_end_index: int | None = None
     learning_rate: float = 1e-4
     weight_decay: float = 1e-4
     value_loss_weight: float = 1.0
@@ -34,8 +36,13 @@ class ResNetLearnerConfig:
     def __post_init__(self) -> None:
         if self.batch_size <= 0:
             raise ValueError("batch_size debe ser positivo.")
-        if self.train_steps <= 0:
-            raise ValueError("train_steps debe ser positivo.")
+        if self.sample_start_index < 0:
+            raise ValueError("sample_start_index debe ser >= 0.")
+        if (
+            self.sample_end_index is not None
+            and self.sample_end_index < self.sample_start_index
+        ):
+            raise ValueError("sample_end_index debe ser >= sample_start_index.")
         if self.learning_rate <= 0:
             raise ValueError("learning_rate debe ser positivo.")
         if self.weight_decay < 0:
@@ -64,6 +71,9 @@ class ResNetLearnerReport:
     global_step: int
     trained_steps: int
     sample_count: int
+    sample_start_index: int = 0
+    sample_end_index: int = 0
+    last_batch_size: int = 0
     metrics: list[ResNetTrainStepMetrics] = field(default_factory=list)
 
 
@@ -107,16 +117,35 @@ class ResNetSampleLearner:
 
     def train(self) -> ResNetLearnerReport:
         sample_buffer = SampleBuffer(self.config.sample_buffer_path, mode="r")
-        sample_count = len(sample_buffer)
+        sample_start_index = int(self.config.sample_start_index)
+        sample_end_index = (
+            len(sample_buffer)
+            if self.config.sample_end_index is None
+            else int(self.config.sample_end_index)
+        )
+        if sample_end_index > len(sample_buffer):
+            raise ValueError(
+                f"sample_end_index={sample_end_index} supera length={len(sample_buffer)}."
+            )
+        if sample_start_index > len(sample_buffer):
+            raise ValueError(
+                f"sample_start_index={sample_start_index} supera length={len(sample_buffer)}."
+            )
+        sample_count = sample_end_index - sample_start_index
         if sample_count == 0:
-            raise ValueError("El SampleBuffer no contiene samples.")
+            raise ValueError("El rango de entrenamiento no contiene samples.")
 
         self.model.train()
         metrics: list[ResNetTrainStepMetrics] = []
         checkpoint_path: Path | None = None
+        indices = np.arange(sample_start_index, sample_end_index, dtype=np.int64)
+        self.rng.shuffle(indices)
+        batches = [
+            indices[start:start + int(self.config.batch_size)]
+            for start in range(0, sample_count, int(self.config.batch_size))
+        ]
 
-        for local_step in range(1, int(self.config.train_steps) + 1):
-            batch_indices = self._sample_indices(sample_count)
+        for local_step, batch_indices in enumerate(batches, start=1):
             batch = sample_buffer.load_batch(batch_indices)
             X = self.encoder(batch.X)
             target_policy = torch.as_tensor(
@@ -162,15 +191,18 @@ class ResNetSampleLearner:
                 )
             )
 
-            if self._should_save_intermediate(local_step):
+            if self._should_save_intermediate(local_step, len(batches)):
                 checkpoint_path = self.save_checkpoint()
 
         checkpoint_path = self.save_checkpoint()
         return ResNetLearnerReport(
             checkpoint_path=str(checkpoint_path),
             global_step=self.global_step,
-            trained_steps=int(self.config.train_steps),
+            trained_steps=len(batches),
             sample_count=sample_count,
+            sample_start_index=sample_start_index,
+            sample_end_index=sample_end_index,
+            last_batch_size=len(batches[-1]),
             metrics=metrics,
         )
 
@@ -178,6 +210,7 @@ class ResNetSampleLearner:
         checkpoint_dir = Path(self.config.checkpoint_dir)
         checkpoint_dir.mkdir(parents=True, exist_ok=True)
         checkpoint_path = checkpoint_dir / f"workforce_resnet_{self.global_step:06d}.pt"
+        temporary_path = checkpoint_path.with_suffix(".pt.tmp")
         torch.save(
             {
                 "model_state_dict": self.model.state_dict(),
@@ -188,23 +221,16 @@ class ResNetSampleLearner:
                     "trained": True,
                 },
             },
-            checkpoint_path,
+            temporary_path,
         )
+        os.replace(temporary_path, checkpoint_path)
         return checkpoint_path
 
-    def _sample_indices(self, sample_count: int) -> np.ndarray:
-        replace = int(self.config.batch_size) > sample_count
-        return self.rng.choice(
-            sample_count,
-            size=int(self.config.batch_size),
-            replace=replace,
-        ).astype(np.int64)
-
-    def _should_save_intermediate(self, local_step: int) -> bool:
+    def _should_save_intermediate(self, local_step: int, total_steps: int) -> bool:
         interval = self.config.save_every_steps
         if interval is None:
             return False
-        return local_step < int(self.config.train_steps) and local_step % interval == 0
+        return local_step < total_steps and local_step % interval == 0
 
     def _resolve_model_config(self, checkpoint: dict[str, Any] | None) -> dict[str, Any]:
         if self.config.model_config is not None:
