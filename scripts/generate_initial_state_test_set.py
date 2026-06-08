@@ -17,7 +17,9 @@ from modules.dataset_generation import (
     NoiseGenerationConfig,
     ProblemSetupSamplingConfig,
     RawDemandTrajectoryWorker,
+    RawStockTrajectoryWorker,
     ResourceSamplingConfig,
+    StockAdjustmentConfig,
     build_generation_jobs,
 )
 from modules.storage import SampleBuffer
@@ -26,7 +28,7 @@ from modules.storage import SampleBuffer
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Genera un test set fijo con solo el estado inicial de trayectorias raw."
+            "Genera un test set fijo con el estado inicial posterior a raw+noise->stock."
         )
     )
     parser.add_argument(
@@ -94,6 +96,12 @@ def parse_args() -> argparse.Namespace:
         help="Lambda de la exponencial truncada para samplear k. Default: 10.0.",
     )
     parser.add_argument(
+        "--p-stock",
+        type=float,
+        default=0.2,
+        help="Probabilidad de reducir stock en cada trayectoria. Default: 0.2.",
+    )
+    parser.add_argument(
         "--mod-4-max",
         type=int,
         default=20,
@@ -117,24 +125,32 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     output_path = Path(args.output_path)
+    if output_path.exists() and not args.overwrite:
+        raise FileExistsError(
+            f"El test set ya existe: {output_path}. Usa --overwrite para recrearlo."
+        )
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    worker = RawDemandTrajectoryWorker(
-        setup_config=ProblemSetupSamplingConfig(
-            allowed_entry_hours=args.allowed_entry_hours,
-            closing_hour=args.closing_hour,
-            max_overcoverage_tolerance=args.max_overcoverage_tolerance,
+    worker = RawStockTrajectoryWorker(
+        raw_worker=RawDemandTrajectoryWorker(
+            setup_config=ProblemSetupSamplingConfig(
+                allowed_entry_hours=args.allowed_entry_hours,
+                closing_hour=args.closing_hour,
+                max_overcoverage_tolerance=args.max_overcoverage_tolerance,
+            ),
+            resource_config=ResourceSamplingConfig(
+                mod_4_max=args.mod_4_max,
+                mod_6_max=args.mod_6_max,
+                mod_8_max=args.mod_8_max,
+            ),
+            noise_config=NoiseGenerationConfig(
+                k_max=args.noise_k_max,
+                k_exponential_lambda=args.noise_k_lambda,
+            ),
+            trajectory_id_prefix="test_raw",
         ),
-        resource_config=ResourceSamplingConfig(
-            mod_4_max=args.mod_4_max,
-            mod_6_max=args.mod_6_max,
-            mod_8_max=args.mod_8_max,
-        ),
-        noise_config=NoiseGenerationConfig(
-            k_max=args.noise_k_max,
-            k_exponential_lambda=args.noise_k_lambda,
-        ),
-        trajectory_id_prefix="test_raw",
+        stock_config=StockAdjustmentConfig(p_stock=args.p_stock),
+        trajectory_id_prefix="test_stock",
     )
 
     jobs = build_generation_jobs(
@@ -146,6 +162,7 @@ def main() -> None:
     print(f"[initial_state_test_set] n_samples={args.n_samples}", flush=True)
     print(f"[initial_state_test_set] seed={args.seed}", flush=True)
     print(f"[initial_state_test_set] workers={args.workers}", flush=True)
+    print(f"[initial_state_test_set] p_stock={args.p_stock}", flush=True)
 
     samples = run_generation_jobs(
         worker=worker,
@@ -154,8 +171,7 @@ def main() -> None:
         progress_interval=args.progress_interval,
     )
 
-    mode = "w" if args.overwrite else "a"
-    buffer = SampleBuffer(output_path, mode=mode)
+    buffer = SampleBuffer(output_path, mode="w")
     saved_samples = buffer.append_samples(samples)
 
     print("[initial_state_test_set] done", flush=True)
@@ -164,7 +180,7 @@ def main() -> None:
 
 
 def run_generation_jobs(
-    worker: RawDemandTrajectoryWorker,
+    worker,
     jobs: Iterable[GenerationJob],
     n_workers: int,
     progress_interval: int,
@@ -240,7 +256,8 @@ def build_initial_state_sample(generated) -> dict:
 
     metadata.update(
         {
-            "sample_source": "test_initial_raw",
+            "sample_source": "test_initial_stock",
+            "pipeline": "raw_noise_stock",
             "source_trajectory_id": trajectory_id,
             "stage": "test_initial",
         }

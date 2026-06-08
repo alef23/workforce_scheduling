@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import numpy as np
 
 from modules.dataset_generation import StockAdjustmentConfig, StockAdjustmentTrajectoryWorker
-from modules.dataset_generation.schemas import GenerationJob
+from modules.dataset_generation.schemas import GeneratedTrajectory, GenerationJob
 
 
 class _FakeTrajectoryBuffer:
@@ -110,6 +110,37 @@ def test_expansion_metadata_supports_dict_and_object_states() -> None:
     ]
 
     assert StockAdjustmentTrajectoryWorker._expansion_metadata(trajectory) == (True, 1)
+
+
+def test_stock_worker_accepts_generated_trajectory_without_source_buffer() -> None:
+    record = _record_with_samples(
+        actions=[0, 9, 9, 9, 9, 1, 15, 15, 15, 15],
+        final_reward=0.25,
+    )
+    generated = GeneratedTrajectory(
+        trajectory=[
+            {
+                "state": sample["state"],
+                "policy": sample["policy"],
+                "action_id": sample["action_id"],
+                "reward": sample["reward"],
+            }
+            for sample in record.samples
+        ],
+        problem_setup=record.problem_setup,
+        trajectory_id=record.trajectory_id,
+        metadata={"final_reward": record.final_reward},
+    )
+    worker = StockAdjustmentTrajectoryWorker(
+        source_buffer_path=None,
+        config=StockAdjustmentConfig(p_stock=0.0),
+    )
+
+    result = worker.run_from_generated(_job(seed=123), generated)
+
+    assert result.trajectories[0].trajectory_id == "stock_raw_000000"
+    assert result.metadata["stock_was_reduced"] is False
+    assert result.metadata["final_reward"] == 0.25
 
 
 def _job(seed: int) -> GenerationJob:

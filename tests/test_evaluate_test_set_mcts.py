@@ -5,6 +5,7 @@ import numpy as np
 from modules.workforce_engine.schemas import WorkforceState
 from scripts.evaluate_test_set_mcts import (
     build_run_summary,
+    load_partial_test_case,
     parse_checkpoint_step,
     resolve_checkpoint_path,
     write_run_summary,
@@ -120,3 +121,72 @@ def test_write_run_summary_writes_latest_and_history(tmp_path: Path) -> None:
     assert len(lines) == 2
     assert '"run_id": "run_1"' in lines[0]
     assert '"run_id": "run_2"' in lines[1]
+
+
+def test_load_partial_test_case_selects_tail_or_initial(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    from scripts import evaluate_test_set_mcts as evaluator_module
+
+    record = type(
+        "Record",
+        (),
+        {
+            "samples": [_trajectory_sample(index) for index in range(5)],
+            "problem_setup": {
+            "mobile_days_off_count": 1,
+            "fixed_day_off": 3,
+            "allowed_entry_hours": [6, 12, 18],
+            "max_overcoverage_tolerance": 0.1,
+            "closing_hour": 22,
+        },
+            "trajectory_id": "partial_000000",
+            "final_reward": -0.25,
+        },
+    )()
+
+    class FakeTrajectoryBuffer:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        def load(self, _trajectory_id):
+            return record
+
+    monkeypatch.setattr(evaluator_module, "TrajectoryBuffer", FakeTrajectoryBuffer)
+    trajectory_path = tmp_path / "partial.zarr"
+
+    tail_case = load_partial_test_case(
+        trajectory_path,
+        "partial_000000",
+        tail_states=3,
+    )
+    full_case = load_partial_test_case(
+        trajectory_path,
+        "partial_000000",
+        tail_states=30,
+    )
+
+    assert tail_case["source_start_index"] == 2
+    assert tail_case["effective_tail_states"] == 3
+    assert tail_case["state"].assignment_week == 2
+    assert full_case["source_start_index"] == 0
+    assert full_case["effective_tail_states"] == 5
+    assert full_case["original_value"] == -0.25
+
+
+def _trajectory_sample(index: int) -> dict:
+    return {
+        "state": {
+            "residual_demand": np.full((24, 28), index, dtype=np.int32),
+            "remaining_stock": np.array([1, 2, 3], dtype=np.int32),
+            "expansion_mode": False,
+            "current_modality": None,
+            "current_entry_hour": None,
+            "assignment_week": index,
+            "initial_demand_total": 100,
+        },
+        "policy": np.ones((55,), dtype=np.float32) / 55,
+        "action_id": index,
+        "reward": -0.25,
+    }

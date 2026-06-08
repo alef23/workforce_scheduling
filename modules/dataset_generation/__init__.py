@@ -10,6 +10,7 @@ from .raw_worker import (
     RawDemandTrajectoryWorker,
     ResourceSamplingConfig,
 )
+from .raw_stock_worker import RawStockTrajectoryWorker
 from .schemas import (
     DatasetGenerationConfig,
     DatasetGenerationReport,
@@ -34,6 +35,7 @@ __all__ = [
     "NoiseGenerationConfig",
     "ProblemSetupSamplingConfig",
     "RawDemandTrajectoryWorker",
+    "RawStockTrajectoryWorker",
     "ResourceSamplingConfig",
     "StockAdjustmentConfig",
     "StockAdjustmentTrajectoryWorker",

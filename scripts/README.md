@@ -9,6 +9,33 @@ MCTS + learner + reload de pesos, ver:
 docs/training_pipeline.md
 ```
 
+## Dashboards
+
+El comando:
+
+```bash
+uv run python scripts/build_model_dashboard.py
+```
+
+genera dos paginas:
+
+```text
+datasets/reports/model_dashboard.html
+datasets/reports/partial_evaluation_dashboard.html
+```
+
+La primera concentra entrenamiento, ciclos y checkpoints. La segunda contiene
+exclusivamente el analisis interactivo del test parcial:
+
+- distribuciones del dataset fijo;
+- filtros por checkpoint y `tail`;
+- scores MCTS y curva `better or equal rate`;
+- tabla buscable, ordenable, paginada y exportable a CSV;
+- metadata completa de cada evaluacion y de su trayectoria fuente.
+
+La evaluacion desde el estado inicial se representa como un caso particular del
+test parcial usando un `tail` suficientemente grande.
+
 ## `generate_raw_demand_dataset.py`
 
 Genera trayectorias raw resueltas usando `RawDemandTrajectoryWorker` y las guarda
@@ -184,8 +211,9 @@ el buffer.
 ## `generate_initial_state_test_set.py`
 
 Genera un `SampleBuffer` de validacion con solo el estado inicial de cada
-trayectoria raw simulada. La trayectoria completa se resuelve internamente para
-guardar `value = final_reward`, pero no se guarda en un `TrajectoryBuffer`.
+trayectoria. La generacion aplica el pipeline completo
+`raw + noise -> stock_adjusted`; luego toma el estado inicial resultante y
+guarda `value = final_reward`.
 
 Comando recomendado:
 
@@ -193,12 +221,33 @@ Comando recomendado:
 uv run python scripts/generate_initial_state_test_set.py 100 \
   --output-path datasets/test/initial_states.zarr \
   --workers 4 \
+  --p-stock 0.2 \
   --overwrite \
   --seed 12345
 ```
 
 El formato es compatible con `SampleBuffer`; `sample_source` queda como
-`test_initial_raw` y `step_index` queda en `0`.
+`test_initial_stock` y `step_index` queda en `0`. Si el buffer ya existe, el
+script exige `--overwrite` para mantener fijo el conjunto de evaluacion.
+
+## `generate_partial_trajectory_test_set.py`
+
+Genera un unico `TrajectoryBuffer` fijo con trayectorias completas para
+evaluaciones parciales. Usa el mismo pipeline
+`RawDemandTrajectoryWorker + noise -> StockAdjustmentTrajectoryWorker` que el
+test de estados iniciales.
+
+```bash
+uv run python scripts/generate_partial_trajectory_test_set.py 100 \
+  --output-path datasets/test/partial_trajectories.zarr \
+  --workers 4 \
+  --p-stock 0.2 \
+  --seed 12345 \
+  --overwrite
+```
+
+Sin `--overwrite`, el comando falla si el buffer ya existe. Esto permite
+comparar checkpoints diferentes siempre contra las mismas trayectorias.
 
 ## `generate_mcts_samples.py`
 
@@ -255,6 +304,25 @@ el resto de metricas del test set.
 
 El script guarda incrementalmente cada trayectoria y su fila JSONL apenas
 termina el job correspondiente.
+
+Para evaluar parcialmente las trayectorias completas, usar `partial` y pasar
+obligatoriamente la cantidad de estados contados desde el final:
+
+```bash
+uv run python scripts/evaluate_test_set_mcts.py \
+  --input-mode partial \
+  --partial-trajectory-path datasets/test/partial_trajectories.zarr \
+  --tail-states 30 \
+  --workers 4 \
+  --mcts-simulations 500 \
+  --device cuda \
+  --overwrite
+```
+
+Para una trayectoria de longitud `T`, el estado de inicio se selecciona con
+`max(0, T - tail_states)`. Los resultados se guardan por defecto en
+`datasets/evaluation/mcts_partial` y registran la longitud fuente, el indice
+inicial y la distancia efectiva desde el final.
 
 Comando con evaluador centralizado y MCTS:
 

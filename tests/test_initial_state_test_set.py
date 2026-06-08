@@ -51,5 +51,6 @@ def test_build_initial_state_sample_uses_initial_state_and_final_value() -> None
     assert sample["action_id"] == 0
     assert sample["value"] == -0.25
     assert sample["policy_weight"] == 1.0
-    assert sample["metadata"]["sample_source"] == "test_initial_raw"
+    assert sample["metadata"]["sample_source"] == "test_initial_stock"
+    assert sample["metadata"]["pipeline"] == "raw_noise_stock"
     assert sample["metadata"]["source_trajectory_id"] == "test_raw_000000"

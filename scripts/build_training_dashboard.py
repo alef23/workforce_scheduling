@@ -60,6 +60,16 @@ def parse_args() -> argparse.Namespace:
         help="TrajectoryBuffer de evaluacion MCTS del test set.",
     )
     parser.add_argument(
+        "--partial-eval-reports-dir",
+        default="datasets/evaluation/mcts_partial/reports",
+        help="Directorio con reportes de evaluacion MCTS parcial.",
+    )
+    parser.add_argument(
+        "--partial-eval-trajectory-path",
+        default="datasets/evaluation/mcts_partial/trajectories.zarr",
+        help="TrajectoryBuffer de evaluacion MCTS parcial.",
+    )
+    parser.add_argument(
         "--output",
         default=None,
         help="Dashboard del modelo. Default: <reports-dir>/model_dashboard.html.",
@@ -110,11 +120,17 @@ def main() -> None:
             "checkpoint_dir": str(args.checkpoint_dir),
             "test_eval_reports_dir": str(args.test_eval_reports_dir),
             "test_eval_trajectory_path": str(args.test_eval_trajectory_path),
+            "partial_eval_reports_dir": str(args.partial_eval_reports_dir),
+            "partial_eval_trajectory_path": str(args.partial_eval_trajectory_path),
         },
         "logs": read_training_logs(reports_dir),
         "test_evaluation": read_test_evaluation_reports(
             reports_dir=Path(args.test_eval_reports_dir),
             trajectory_path=args.test_eval_trajectory_path,
+        ),
+        "partial_test_evaluation": read_test_evaluation_reports(
+            reports_dir=Path(args.partial_eval_reports_dir),
+            trajectory_path=args.partial_eval_trajectory_path,
         ),
         "buffers": {
             "raw": summarize_trajectory_buffer(
@@ -1604,6 +1620,7 @@ def render_overview_dashboard(data: dict[str, Any]) -> str:
       <label>Run <select id="runSelect"></select></label>
       <button id="showAll">Mostrar todo</button>
       <a class="button" href="zarr_dashboard.html">Abrir dashboard Zarr</a>
+      <a class="button" href="partial_evaluation_dashboard.html">Evaluacion parcial</a>
       <span class="subtle">Para actualizar, volver a ejecutar <code>scripts/build_model_dashboard.py</code>.</span>
     </div>
   </header>
@@ -1641,11 +1658,6 @@ def render_overview_dashboard(data: dict[str, Any]) -> str:
         <h2>Ciclos</h2>
         <div id="cyclesTable"></div>
       </div>
-    </section>
-
-    <section class="panel">
-      <h2>Evaluacion MCTS del test set</h2>
-      <div id="testEval"></div>
     </section>
 
     <section class="panel">
@@ -1920,8 +1932,12 @@ def render_overview_dashboard(data: dict[str, Any]) -> str:
       </div>`;
     }}
 
-    function renderTestEvaluation() {{
-      const evaluation = DATA.test_evaluation || {{}};
+    function renderTestEvaluation(
+      evaluationKey = 'test_evaluation',
+      targetId = 'testEval',
+      fallbackReports = 'datasets/evaluation/mcts_test/reports'
+    ) {{
+      const evaluation = DATA[evaluationKey] || {{}};
       const runs = (evaluation.runs || []).slice().sort((a, b) => {{
         const aStep = a.checkpoint_step ?? -1;
         const bStep = b.checkpoint_step ?? -1;
@@ -1930,9 +1946,9 @@ def render_overview_dashboard(data: dict[str, Any]) -> str:
       }});
       const latest = evaluation.latest_summary || runs[runs.length - 1];
       if (!runs.length && !(evaluation.trajectories || []).length) {{
-        document.getElementById('testEval').innerHTML = `
+        document.getElementById(targetId).innerHTML = `
           <p class="subtle">Sin corridas de evaluacion. Ejecutar <code>scripts/evaluate_test_set_mcts.py</code> y luego reconstruir este dashboard.</p>
-          <p class="subtle">Reportes esperados: <code>${{evaluation.reports_dir || 'datasets/evaluation/mcts_test/reports'}}</code>.</p>
+          <p class="subtle">Reportes esperados: <code>${{evaluation.reports_dir || fallbackReports}}</code>.</p>
         `;
         return;
       }}
@@ -1947,6 +1963,9 @@ def render_overview_dashboard(data: dict[str, Any]) -> str:
         ['Value error medio', latest?.mean_value_error],
         ['Trayectorias log', evaluation.trajectory_count],
       ];
+      if (evaluationKey === 'partial_test_evaluation') {{
+        cards.push(['Estados desde final', latest?.requested_tail_states]);
+      }}
       const evaluatedTrajectories = evaluation.trajectories || [];
       const betterCount = evaluatedTrajectories.filter(row => Number(row.value_error) > 0).length;
       const equalCount = evaluatedTrajectories.filter(row => Number(row.value_error) === 0).length;
@@ -1961,6 +1980,7 @@ def render_overview_dashboard(data: dict[str, Any]) -> str:
         {{label: 'Run', render: r => `<span class="pill">${{r.run_id}}</span>`}},
         {{label: 'Step', render: r => fmt(r.checkpoint_step)}},
         {{label: 'Sims', render: r => fmt(r.mcts_simulations)}},
+        {{label: 'Tail', render: r => fmt(r.requested_tail_states)}},
         {{label: 'Jobs', render: r => fmt(r.completed_jobs)}},
         {{label: 'Failed', render: r => fmt(r.failed_jobs)}},
         {{label: 'Positivos', render: r => `${{fmt(r.positive_count)}} / ${{fmt(r.completed_jobs || r.total_jobs)}}`}},
@@ -1975,6 +1995,8 @@ def render_overview_dashboard(data: dict[str, Any]) -> str:
       const trajectoryTable = table(trajectories, [
         {{label: 'Trajectory', render: r => r.trajectory_id}},
         {{label: 'Sample', render: r => fmt(r.source_sample_index)}},
+        {{label: 'Inicio', render: r => fmt(r.source_start_index)}},
+        {{label: 'Tail efectivo', render: r => fmt(r.effective_tail_states)}},
         {{label: 'Step', render: r => fmt(r.checkpoint_step)}},
         {{label: 'States', render: r => fmt(r.states_count)}},
         {{label: 'Reward', render: r => fmt(r.final_reward)}},
@@ -1985,7 +2007,7 @@ def render_overview_dashboard(data: dict[str, Any]) -> str:
         {{label: 'Tiempo', render: r => formatDuration(Number(r.elapsed_seconds))}},
       ]);
 
-      document.getElementById('testEval').innerHTML = `
+      document.getElementById(targetId).innerHTML = `
         <div class="grid">
           ${{cards.map(([label, value]) => `<div class="card"><div class="metric">${{fmt(value)}}</div><div class="label">${{label}}</div></div>`).join('')}}
         </div>
@@ -2186,7 +2208,6 @@ def render_overview_dashboard(data: dict[str, Any]) -> str:
         {{key: 'reweighted_percent', label: 'reweighted %', color: '#344054', format: 'percent'}},
       ]);
       renderTables();
-      renderTestEvaluation();
       renderCheckpoints();
     }}
 

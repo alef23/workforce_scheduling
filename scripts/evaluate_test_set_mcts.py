@@ -42,6 +42,7 @@ class EvaluationJob:
     job_id: str
     sample_index: int
     seed: int
+    source_trajectory_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -114,14 +115,43 @@ def parse_args() -> argparse.Namespace:
         description="Evalua el test set fijo generando trayectorias MCTS."
     )
     parser.add_argument(
+        "--input-mode",
+        choices=("initial", "partial"),
+        default="initial",
+        help=(
+            "Origen de evaluacion: SampleBuffer inicial o TrajectoryBuffer parcial. "
+            "Default: initial."
+        ),
+    )
+    parser.add_argument(
         "--sample-path",
         default="datasets/test/initial_states.zarr",
         help="SampleBuffer de estados iniciales. Default: datasets/test/initial_states.zarr.",
     )
     parser.add_argument(
+        "--partial-trajectory-path",
+        default="datasets/test/partial_trajectories.zarr",
+        help=(
+            "TrajectoryBuffer fuente para --input-mode partial. "
+            "Default: datasets/test/partial_trajectories.zarr."
+        ),
+    )
+    parser.add_argument(
+        "--tail-states",
+        type=int,
+        default=None,
+        help=(
+            "Cantidad de estados contados desde el final para elegir el inicio. "
+            "Requerido con --input-mode partial."
+        ),
+    )
+    parser.add_argument(
         "--output-root",
-        default="datasets/evaluation/mcts_test",
-        help="Directorio raiz de salida. Default: datasets/evaluation/mcts_test.",
+        default=None,
+        help=(
+            "Directorio raiz de salida. Defaults: datasets/evaluation/mcts_test "
+            "o datasets/evaluation/mcts_partial."
+        ),
     )
     parser.add_argument(
         "--trajectory-path",
@@ -231,9 +261,27 @@ def main() -> None:
         raise ValueError("--workers debe ser positivo.")
     if int(args.progress_interval) <= 0:
         raise ValueError("--progress-interval debe ser positivo.")
+    if args.input_mode == "partial":
+        if args.tail_states is None or int(args.tail_states) <= 0:
+            raise ValueError(
+                "--tail-states debe ser positivo con --input-mode partial."
+            )
+    elif args.tail_states is not None:
+        raise ValueError("--tail-states solo se usa con --input-mode partial.")
 
-    sample_path = Path(args.sample_path)
-    output_root = Path(args.output_root)
+    sample_path = (
+        Path(args.partial_trajectory_path)
+        if args.input_mode == "partial"
+        else Path(args.sample_path)
+    )
+    output_root = Path(
+        args.output_root
+        or (
+            "datasets/evaluation/mcts_partial"
+            if args.input_mode == "partial"
+            else "datasets/evaluation/mcts_test"
+        )
+    )
     trajectory_path = (
         Path(args.trajectory_path)
         if args.trajectory_path is not None
@@ -251,11 +299,15 @@ def main() -> None:
     checkpoint_step = parse_checkpoint_step(checkpoint_path)
     run_id = (
         args.run_id
-        or f"test_mcts_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
+        or (
+            f"{'partial_mcts' if args.input_mode == 'partial' else 'test_mcts'}_"
+            f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
+        )
     )
 
     jobs = build_evaluation_jobs(
         sample_path=sample_path,
+        input_mode=args.input_mode,
         n_samples=args.n_samples,
         shuffle=bool(args.shuffle),
         seed=args.seed,
@@ -263,6 +315,8 @@ def main() -> None:
 
     config = _RunConfig(
         sample_path=sample_path,
+        input_mode=args.input_mode,
+        tail_states=args.tail_states,
         checkpoint_path=checkpoint_path,
         checkpoint_step=checkpoint_step,
         run_id=run_id,
@@ -321,6 +375,8 @@ def main() -> None:
         errors=errors,
         elapsed_seconds=elapsed_seconds,
         saved_trajectories=saved_trajectories,
+        input_mode=args.input_mode,
+        tail_states=args.tail_states,
     )
     write_run_summary(summary=summary, reports_dir=reports_dir)
     print_summary(summary)
@@ -329,6 +385,8 @@ def main() -> None:
 @dataclass(frozen=True)
 class _RunConfig:
     sample_path: Path
+    input_mode: str
+    tail_states: int | None
     checkpoint_path: Path
     checkpoint_step: int
     run_id: str
@@ -367,12 +425,18 @@ def build_evaluation_jobs(
     n_samples: int | None,
     shuffle: bool,
     seed: int | None,
+    input_mode: str = "initial",
 ) -> list[EvaluationJob]:
-    sample_count = len(SampleBuffer(sample_path, mode="r"))
-    if sample_count == 0:
+    if input_mode == "partial":
+        source_ids = TrajectoryBuffer(sample_path, mode="r").list_ids()
+    else:
+        sample_count = len(SampleBuffer(sample_path, mode="r"))
+        source_ids = [None] * sample_count
+
+    if not source_ids:
         raise ValueError(f"El test set esta vacio: {sample_path}")
 
-    indices = list(range(sample_count))
+    indices = list(range(len(source_ids)))
     if shuffle:
         rng = random.Random(seed)
         rng.shuffle(indices)
@@ -389,6 +453,7 @@ def build_evaluation_jobs(
             job_id=f"test_mcts_{job_index:06d}",
             sample_index=int(sample_index),
             seed=int(seed_base + job_index),
+            source_trajectory_id=source_ids[sample_index],
         )
         for job_index, sample_index in enumerate(indices)
     ]
@@ -404,7 +469,7 @@ def run_sequential(
     if not jobs:
         return [], []
 
-    first_case = load_test_case(run_config.sample_path, jobs[0].sample_index)
+    first_case = load_test_case(run_config, jobs[0])
     evaluator = ResNetStateEvaluator(
         setup=first_case["problem_setup"],
         checkpoint_path=run_config.checkpoint_path,
@@ -580,7 +645,7 @@ def run_job(
     run_config: _RunConfig,
     evaluator: Any,
 ) -> EvaluationResult:
-    case = load_test_case(run_config.sample_path, job.sample_index)
+    case = load_test_case(run_config, job)
     setup = case["problem_setup"]
     initial_state = case["state"]
     original_value = float(case["original_value"])
@@ -609,13 +674,21 @@ def run_job(
 
     trajectory = with_terminal_state(trajectory, final_state, final_reward)
     elapsed_seconds = time.monotonic() - started_at
-    trajectory_id = f"test_mcts_{int(job.sample_index):06d}"
+    trajectory_prefix = "partial_mcts" if run_config.input_mode == "partial" else "test_mcts"
+    trajectory_id = f"{trajectory_prefix}_{int(job.sample_index):06d}"
     value_error = float(final_reward - original_value)
 
     metrics = {
         "trajectory_id": trajectory_id,
         "source_sample_index": int(job.sample_index),
         "source_trajectory_id": str(case["source_trajectory_id"]),
+        "evaluation_type": (
+            "partial_tail" if run_config.input_mode == "partial" else "initial"
+        ),
+        "requested_tail_states": case.get("requested_tail_states"),
+        "effective_tail_states": case.get("effective_tail_states"),
+        "source_start_index": case.get("source_start_index"),
+        "source_trajectory_length": case.get("source_trajectory_length"),
         "checkpoint_path": str(run_config.checkpoint_path),
         "checkpoint_step": int(run_config.checkpoint_step),
         "mcts_simulations": int(run_config.mcts_config.num_simulations),
@@ -643,7 +716,23 @@ def run_job(
     )
 
 
-def load_test_case(sample_path: str | Path, sample_index: int) -> dict[str, Any]:
+def load_test_case(
+    run_config: _RunConfig,
+    job: EvaluationJob,
+) -> dict[str, Any]:
+    if run_config.input_mode == "partial":
+        return load_partial_test_case(
+            trajectory_path=run_config.sample_path,
+            trajectory_id=str(job.source_trajectory_id),
+            tail_states=int(run_config.tail_states),
+        )
+    return load_initial_test_case(run_config.sample_path, job.sample_index)
+
+
+def load_initial_test_case(
+    sample_path: str | Path,
+    sample_index: int,
+) -> dict[str, Any]:
     batch = SampleBuffer(sample_path, mode="r").load_batch([int(sample_index)])
     setup = ProblemSetup(
         mobile_days_off_count=int(batch.X["mobile_days_off_count"][0]),
@@ -670,6 +759,45 @@ def load_test_case(sample_path: str | Path, sample_index: int) -> dict[str, Any]
         "original_value": float(batch.Y["value"][0]),
         "trajectory_id": str(batch.metadata["trajectory_id"][0]),
         "source_trajectory_id": source_trajectory_id,
+    }
+
+
+def load_partial_test_case(
+    trajectory_path: str | Path,
+    trajectory_id: str,
+    tail_states: int,
+) -> dict[str, Any]:
+    if int(tail_states) <= 0:
+        raise ValueError("tail_states debe ser positivo.")
+
+    record = TrajectoryBuffer(trajectory_path, mode="r").load(trajectory_id)
+    source_length = len(record.samples)
+    if source_length == 0:
+        raise ValueError(f"La trayectoria {trajectory_id} esta vacia.")
+
+    start_index = max(0, source_length - int(tail_states))
+    sample = record.samples[start_index]
+    state_data = sample["state"]
+    setup = ProblemSetup(**record.problem_setup)
+    state = WorkforceState(
+        residual_demand=state_data["residual_demand"],
+        remaining_stock=state_data["remaining_stock"],
+        expansion_mode=bool(state_data["expansion_mode"]),
+        current_modality=state_data["current_modality"],
+        current_entry_hour=state_data["current_entry_hour"],
+        assignment_week=int(state_data["assignment_week"]),
+        initial_demand_total=int(state_data["initial_demand_total"]),
+    )
+    return {
+        "problem_setup": setup,
+        "state": state,
+        "original_value": float(record.final_reward),
+        "trajectory_id": str(record.trajectory_id),
+        "source_trajectory_id": str(record.trajectory_id),
+        "requested_tail_states": int(tail_states),
+        "effective_tail_states": int(source_length - start_index),
+        "source_start_index": int(start_index),
+        "source_trajectory_length": int(source_length),
     }
 
 
@@ -755,6 +883,8 @@ def build_run_summary(
     errors: list[str],
     elapsed_seconds: float,
     saved_trajectories: int,
+    input_mode: str = "initial",
+    tail_states: int | None = None,
 ) -> dict[str, Any]:
     metrics = [result.metrics for result in results]
     final_rewards = [float(item["final_reward"]) for item in metrics]
@@ -767,6 +897,12 @@ def build_run_summary(
 
     return {
         "run_id": run_id,
+        "evaluation_type": (
+            "partial_tail" if input_mode == "partial" else "initial"
+        ),
+        "requested_tail_states": (
+            int(tail_states) if tail_states is not None else None
+        ),
         "sample_path": str(sample_path),
         "trajectory_path": str(trajectory_path),
         "checkpoint_path": str(checkpoint_path),
@@ -819,10 +955,18 @@ def print_summary(summary: dict[str, Any]) -> None:
 
 def print_job_result(result: EvaluationResult) -> None:
     metrics = result.metrics
+    partial_details = ""
+    if metrics.get("evaluation_type") == "partial_tail":
+        partial_details = (
+            f"tail={metrics['requested_tail_states']} "
+            f"tail_effective={metrics['effective_tail_states']} "
+            f"start={metrics['source_start_index']} "
+        )
     print(
         "[test_mcts] saved "
         f"trajectory_id={metrics['trajectory_id']} "
         f"sample={metrics['source_sample_index']} "
+        f"{partial_details}"
         f"states={metrics['states_count']} "
         f"reward={metrics['final_reward']:.6f} "
         f"original={metrics['original_value']:.6f} "

@@ -11,6 +11,11 @@ from build_training_dashboard import (
     render_overview_dashboard,
     summarize_checkpoints,
 )
+from partial_evaluation_dashboard import (
+    merge_partial_evaluation_metadata,
+    read_partial_test_dataset,
+    render_partial_evaluation_dashboard,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -28,19 +33,32 @@ def parse_args() -> argparse.Namespace:
         help="Directorio de checkpoints ResNet.",
     )
     parser.add_argument(
-        "--test-eval-reports-dir",
-        default="datasets/evaluation/mcts_test/reports",
-        help="Directorio con reportes JSON de evaluacion MCTS.",
+        "--partial-eval-reports-dir",
+        default="datasets/evaluation/mcts_partial/reports",
+        help="Directorio con reportes de evaluacion MCTS parcial.",
     )
     parser.add_argument(
-        "--test-eval-trajectory-path",
-        default="datasets/evaluation/mcts_test/trajectories.zarr",
-        help="Ruta informativa al buffer de trayectorias evaluadas; no se abre.",
+        "--partial-test-dataset-path",
+        default="datasets/test/partial_trajectories.zarr",
+        help="Buffer fijo de trayectorias completas del test parcial.",
+    )
+    parser.add_argument(
+        "--partial-eval-trajectory-path",
+        default="datasets/evaluation/mcts_partial/trajectories.zarr",
+        help="Ruta informativa al buffer de trayectorias de evaluacion parcial.",
     )
     parser.add_argument(
         "--output",
         default=None,
         help="HTML destino. Default: <reports-dir>/model_dashboard.html.",
+    )
+    parser.add_argument(
+        "--partial-output",
+        default=None,
+        help=(
+            "HTML de evaluacion parcial. "
+            "Default: <reports-dir>/partial_evaluation_dashboard.html."
+        ),
     )
     return parser.parse_args()
 
@@ -51,26 +69,47 @@ def main() -> None:
     output_path = (
         Path(args.output) if args.output else reports_dir / "model_dashboard.html"
     )
+    partial_output_path = (
+        Path(args.partial_output)
+        if args.partial_output
+        else reports_dir / "partial_evaluation_dashboard.html"
+    )
     data = {
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "paths": {
             "reports_dir": str(reports_dir),
             "checkpoint_dir": str(args.checkpoint_dir),
-            "test_eval_reports_dir": str(args.test_eval_reports_dir),
-            "test_eval_trajectory_path": str(args.test_eval_trajectory_path),
+            "partial_eval_reports_dir": str(args.partial_eval_reports_dir),
+            "partial_eval_trajectory_path": str(args.partial_eval_trajectory_path),
+            "partial_dashboard_output": str(partial_output_path),
         },
         "logs": read_training_logs(reports_dir),
-        "test_evaluation": read_test_evaluation_reports(
-            reports_dir=Path(args.test_eval_reports_dir),
-            trajectory_path=args.test_eval_trajectory_path,
-        ),
         "checkpoints": summarize_checkpoints(args.checkpoint_dir),
     }
     data["derived"] = build_derived_summary(data)
+    partial_dataset = read_partial_test_dataset(args.partial_test_dataset_path)
+    partial_evaluation = read_test_evaluation_reports(
+        reports_dir=Path(args.partial_eval_reports_dir),
+        trajectory_path=args.partial_eval_trajectory_path,
+    )
+    partial_data = {
+        "generated_at": data["generated_at"],
+        "dataset": partial_dataset,
+        "evaluation": merge_partial_evaluation_metadata(
+            dataset=partial_dataset,
+            evaluation=partial_evaluation,
+        ),
+    }
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    partial_output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(render_overview_dashboard(data), encoding="utf-8")
+    partial_output_path.write_text(
+        render_partial_evaluation_dashboard(partial_data),
+        encoding="utf-8",
+    )
     print(f"[model_dashboard] output={output_path}", flush=True)
+    print(f"[model_dashboard] partial_output={partial_output_path}", flush=True)
 
 
 if __name__ == "__main__":

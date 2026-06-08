@@ -32,13 +32,16 @@ class StockAdjustmentConfig:
 
 @dataclass
 class StockAdjustmentTrajectoryWorker:
-    source_buffer_path: str | Path
+    source_buffer_path: str | Path | None
     config: StockAdjustmentConfig = StockAdjustmentConfig()
     trajectory_id_prefix: str = "stock"
 
     worker_type: str = "stock_adjustment"
 
     def run(self, job: GenerationJob) -> GenerationWorkerResult:
+        if self.source_buffer_path is None:
+            raise ValueError("source_buffer_path es requerido para run().")
+
         source_trajectory_id = str(job.payload["source_trajectory_id"])
         rng = random.Random(int(job.seed))
 
@@ -47,9 +50,53 @@ class StockAdjustmentTrajectoryWorker:
 
         problem_setup = ProblemSetup(**record.problem_setup)
         original_trajectory = self._samples_to_trajectory(record.samples)
+        return self._adjust_trajectory(
+            job=job,
+            source_trajectory_id=source_trajectory_id,
+            problem_setup=problem_setup,
+            original_trajectory=original_trajectory,
+            final_reward=float(record.final_reward),
+            rng=rng,
+        )
+
+    def run_from_generated(
+        self,
+        job: GenerationJob,
+        generated: GeneratedTrajectory,
+    ) -> GenerationWorkerResult:
+        source_trajectory_id = str(generated.trajectory_id)
+        problem_setup = (
+            generated.problem_setup
+            if isinstance(generated.problem_setup, ProblemSetup)
+            else ProblemSetup(**generated.problem_setup)
+        )
+        final_reward = float(
+            generated.metadata.get(
+                "final_reward",
+                generated.trajectory[-1]["reward"],
+            )
+        )
+        return self._adjust_trajectory(
+            job=job,
+            source_trajectory_id=source_trajectory_id,
+            problem_setup=problem_setup,
+            original_trajectory=generated.trajectory,
+            final_reward=final_reward,
+            rng=random.Random(int(job.seed)),
+        )
+
+    def _adjust_trajectory(
+        self,
+        job: GenerationJob,
+        source_trajectory_id: str,
+        problem_setup: ProblemSetup,
+        original_trajectory: list[dict[str, Any]],
+        final_reward: float,
+        rng: random.Random,
+    ) -> GenerationWorkerResult:
         original_actions = extract_actions_from_trajectory(original_trajectory)
-        original_stock = self._initial_stock(record.samples)
-        initial_demand = self._initial_demand(record.samples)
+        original_stock = self._initial_stock(original_trajectory)
+        initial_demand = self._initial_demand(original_trajectory)
         output_trajectory_id = f"{self.trajectory_id_prefix}_{source_trajectory_id}"
 
         should_reduce_stock = rng.random() < float(self.config.p_stock)
@@ -66,9 +113,9 @@ class StockAdjustmentTrajectoryWorker:
                 has_expansion_mode=has_expansion_mode,
                 first_expansion_step=first_expansion_step,
                 initial_demand_total=int(initial_demand.sum()),
-                final_reward=float(record.final_reward),
+                final_reward=float(final_reward),
                 trajectory_length=len(original_trajectory),
-                source_trajectory_length=len(record.samples),
+                source_trajectory_length=len(original_trajectory),
                 stock_cut_index=None,
             )
             return self._build_result(
@@ -97,9 +144,9 @@ class StockAdjustmentTrajectoryWorker:
                 has_expansion_mode=has_expansion_mode,
                 first_expansion_step=first_expansion_step,
                 initial_demand_total=int(initial_demand.sum()),
-                final_reward=float(record.final_reward),
+                final_reward=float(final_reward),
                 trajectory_length=len(original_trajectory),
-                source_trajectory_length=len(record.samples),
+                source_trajectory_length=len(original_trajectory),
                 stock_cut_index=None,
             )
             return self._build_result(
@@ -135,7 +182,7 @@ class StockAdjustmentTrajectoryWorker:
             initial_demand_total=int(initial_demand.sum()),
             final_reward=float(replayed["final_reward"]),
             trajectory_length=len(trajectory),
-            source_trajectory_length=len(record.samples),
+            source_trajectory_length=len(original_trajectory),
             stock_cut_index=cut_index,
         )
 
@@ -183,15 +230,27 @@ class StockAdjustmentTrajectoryWorker:
 
     @staticmethod
     def _initial_stock(samples: list[dict[str, Any]]) -> list[int]:
+        state = samples[0]["state"]
+        remaining_stock = (
+            state["remaining_stock"]
+            if isinstance(state, dict)
+            else state.remaining_stock
+        )
         return [
             int(value)
-            for value in np.asarray(samples[0]["state"]["remaining_stock"], dtype=int)
+            for value in np.asarray(remaining_stock, dtype=int)
         ]
 
     @staticmethod
     def _initial_demand(samples: list[dict[str, Any]]) -> np.ndarray:
+        state = samples[0]["state"]
+        residual_demand = (
+            state["residual_demand"]
+            if isinstance(state, dict)
+            else state.residual_demand
+        )
         return np.asarray(
-            samples[0]["state"]["residual_demand"],
+            residual_demand,
             dtype=int,
         )
 
