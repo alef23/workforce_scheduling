@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import random
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -27,15 +28,19 @@ class MCTSGenerationWorker:
     worker_type: str = "mcts_generation"
 
     def run(self, job: MCTSGenerationJob) -> MCTSWorkerResult:
+        job_started_at = time.perf_counter()
         rng = random.Random(int(job.seed))
+        zarr_read_started_at = time.perf_counter()
         record = TrajectoryBuffer(self.source_buffer_path, mode="r").load(
             job.source_trajectory_id
         )
+        zarr_read_seconds = time.perf_counter() - zarr_read_started_at
         setup = ProblemSetup(**record.problem_setup)
         engine = WorkforceEngine(setup)
         self._prepare_evaluator_for_setup(setup)
 
         if rng.random() < float(self.config.p_mcts):
+            mcts_started_at = time.perf_counter()
             trajectories = self._generate_mcts_trajectories(
                 job=job,
                 record=record,
@@ -43,6 +48,7 @@ class MCTSGenerationWorker:
                 engine=engine,
                 rng=rng,
             )
+            mcts_generation_seconds = time.perf_counter() - mcts_started_at
             used_mcts = True
         else:
             trajectories = [
@@ -52,8 +58,10 @@ class MCTSGenerationWorker:
                     setup=setup,
                 )
             ]
+            mcts_generation_seconds = 0.0
             used_mcts = False
 
+        job_total_seconds = time.perf_counter() - job_started_at
         return MCTSWorkerResult(
             job_id=job.job_id,
             source_trajectory_id=job.source_trajectory_id,
@@ -63,6 +71,9 @@ class MCTSGenerationWorker:
                 "worker_type": self.worker_type,
                 "used_mcts": bool(used_mcts),
                 "generated_trajectories": len(trajectories),
+                "zarr_read_seconds": float(zarr_read_seconds),
+                "mcts_generation_seconds": float(mcts_generation_seconds),
+                "job_total_seconds": float(job_total_seconds),
             },
         )
 

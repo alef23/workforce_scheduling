@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -75,6 +76,12 @@ class ResNetLearnerReport:
     sample_end_index: int = 0
     last_batch_size: int = 0
     metrics: list[ResNetTrainStepMetrics] = field(default_factory=list)
+    training_wall_seconds: float = 0.0
+    zarr_read_total_seconds: float = 0.0
+    encoding_total_seconds: float = 0.0
+    optimization_total_seconds: float = 0.0
+    checkpoint_save_total_seconds: float = 0.0
+    samples_per_training_second: float = 0.0
 
 
 class ResNetSampleLearner:
@@ -116,6 +123,7 @@ class ResNetSampleLearner:
         self.model_config = model_config
 
     def train(self) -> ResNetLearnerReport:
+        training_started_at = time.perf_counter()
         sample_buffer = SampleBuffer(self.config.sample_buffer_path, mode="r")
         sample_start_index = int(self.config.sample_start_index)
         sample_end_index = (
@@ -138,6 +146,10 @@ class ResNetSampleLearner:
         self.model.train()
         metrics: list[ResNetTrainStepMetrics] = []
         checkpoint_path: Path | None = None
+        zarr_read_total_seconds = 0.0
+        encoding_total_seconds = 0.0
+        optimization_total_seconds = 0.0
+        checkpoint_save_total_seconds = 0.0
         indices = np.arange(sample_start_index, sample_end_index, dtype=np.int64)
         self.rng.shuffle(indices)
         batches = [
@@ -146,7 +158,11 @@ class ResNetSampleLearner:
         ]
 
         for local_step, batch_indices in enumerate(batches, start=1):
+            read_started_at = time.perf_counter()
             batch = sample_buffer.load_batch(batch_indices)
+            zarr_read_total_seconds += time.perf_counter() - read_started_at
+
+            encoding_started_at = time.perf_counter()
             X = self.encoder(batch.X)
             target_policy = torch.as_tensor(
                 batch.Y["policy"],
@@ -163,7 +179,9 @@ class ResNetSampleLearner:
                 dtype=torch.float32,
                 device=self.device,
             )
+            encoding_total_seconds += time.perf_counter() - encoding_started_at
 
+            optimization_started_at = time.perf_counter()
             self.optimizer.zero_grad(set_to_none=True)
             policy_logits, value = self.model(X)
             policy_loss = self._weighted_soft_cross_entropy(
@@ -190,11 +208,21 @@ class ResNetSampleLearner:
                     mean_policy_weight=float(policy_weight.mean().detach().cpu().item()),
                 )
             )
+            optimization_total_seconds += (
+                time.perf_counter() - optimization_started_at
+            )
 
             if self._should_save_intermediate(local_step, len(batches)):
+                checkpoint_started_at = time.perf_counter()
                 checkpoint_path = self.save_checkpoint()
+                checkpoint_save_total_seconds += (
+                    time.perf_counter() - checkpoint_started_at
+                )
 
+        checkpoint_started_at = time.perf_counter()
         checkpoint_path = self.save_checkpoint()
+        checkpoint_save_total_seconds += time.perf_counter() - checkpoint_started_at
+        training_wall_seconds = time.perf_counter() - training_started_at
         return ResNetLearnerReport(
             checkpoint_path=str(checkpoint_path),
             global_step=self.global_step,
@@ -204,6 +232,16 @@ class ResNetSampleLearner:
             sample_end_index=sample_end_index,
             last_batch_size=len(batches[-1]),
             metrics=metrics,
+            training_wall_seconds=float(training_wall_seconds),
+            zarr_read_total_seconds=float(zarr_read_total_seconds),
+            encoding_total_seconds=float(encoding_total_seconds),
+            optimization_total_seconds=float(optimization_total_seconds),
+            checkpoint_save_total_seconds=float(checkpoint_save_total_seconds),
+            samples_per_training_second=(
+                float(sample_count / training_wall_seconds)
+                if training_wall_seconds > 0
+                else 0.0
+            ),
         )
 
     def save_checkpoint(self) -> Path:

@@ -1644,9 +1644,14 @@ def render_overview_dashboard(data: dict[str, Any]) -> str:
         <div class="chart" id="throughputChart"></div>
       </div>
       <div class="panel">
-        <h2>Composicion de jobs</h2>
-        <div class="chart" id="jobMixChart"></div>
+        <h2>Tiempos por ciclo</h2>
+        <div class="chart" id="timingChart"></div>
       </div>
+    </section>
+
+    <section class="panel">
+      <h2>Composicion de jobs</h2>
+      <div class="chart" id="jobMixChart"></div>
     </section>
 
     <section class="two-col">
@@ -2051,16 +2056,16 @@ def render_overview_dashboard(data: dict[str, Any]) -> str:
       const configuredMctsRate = runs.length
         ? runs.reduce((acc, row) => acc + Number(row.args?.p_mcts || 0), 0) / runs.length
         : null;
-      const cycleDurations = cycles.slice(1).map((cycle, index) => {{
-        const previous = cycles[index];
-        if (cycle.run_id !== previous.run_id) return null;
-        return (new Date(cycle.created_at) - new Date(previous.created_at)) / 1000;
-      }}).filter(value => Number.isFinite(value) && value > 0);
-      const latestDuration = cycleDurations[cycleDurations.length - 1];
-      const latestCycleSamples = cycles[cycles.length - 1]?.cycle?.saved_samples;
-      const latestSamplesPerSecond = latestDuration && latestCycleSamples
-        ? latestCycleSamples / latestDuration
-        : null;
+      const latestCycle = cycles[cycles.length - 1];
+      const latestGenerationSeconds = Number(
+        latestCycle?.cycle?.generation_wall_seconds
+      );
+      const latestTrainingSeconds = Number(
+        latestCycle?.learner?.training_wall_seconds
+      );
+      const latestSamplesPerSecond = Number(
+        latestCycle?.cycle?.samples_per_generation_second
+      );
       const cards = [
         ['Runs', runs.length],
         ['Ciclos', cycles.length],
@@ -2069,8 +2074,10 @@ def render_overview_dashboard(data: dict[str, Any]) -> str:
         ['Jobs MCTS', mctsJobs],
         ['MCTS real', actualMctsRate === null ? null : `${{fmt(actualMctsRate * 100, 1)}}%`],
         ['MCTS configurado', configuredMctsRate === null ? null : `${{fmt(configuredMctsRate * 100, 1)}}%`],
-        ['Duracion ultimo ciclo', latestDuration === undefined ? null : formatDuration(latestDuration)],
-        ['Samples/s ultimo ciclo', latestSamplesPerSecond],
+        ['Generacion ultimo ciclo', latestGenerationSeconds > 0 ? formatDuration(latestGenerationSeconds) : null],
+        ['Entrenamiento ultimo ciclo', latestTrainingSeconds > 0 ? formatDuration(latestTrainingSeconds) : null],
+        ['Samples/s generacion', latestSamplesPerSecond > 0 ? latestSamplesPerSecond : null],
+        ['Samples/s entrenamiento', latestCycle?.learner?.samples_per_training_second],
         ['Samples por job', totalClassifiedJobs ? savedSamples / totalClassifiedJobs : null],
         ['Jobs reweighted', reweightedJobs],
         ['Failed jobs', runs.reduce((acc, row) => acc + (row.report?.failed_jobs || 0), 0)],
@@ -2102,6 +2109,11 @@ def render_overview_dashboard(data: dict[str, Any]) -> str:
         {{label: 'Rango', render: r => `[${{fmt(r.cycle?.sample_start_index)}}, ${{fmt(r.cycle?.sample_end_index)}})`}},
         {{label: 'MCTS', render: r => fmt(r.cycle?.used_mcts_jobs)}},
         {{label: 'Reweighted', render: r => fmt(r.cycle?.reweighted_jobs)}},
+        {{label: 'Generacion', render: r => formatDuration(Number(r.cycle?.generation_wall_seconds))}},
+        {{label: 'MCTS acum.', render: r => formatDuration(Number(r.cycle?.mcts_generation_total_seconds))}},
+        {{label: 'Zarr read', render: r => formatDuration(Number(r.cycle?.zarr_read_total_seconds))}},
+        {{label: 'Zarr write', render: r => formatDuration(Number(r.cycle?.zarr_write_total_seconds))}},
+        {{label: 'Training', render: r => formatDuration(Number(r.learner?.training_wall_seconds))}},
         {{label: 'Steps', render: r => fmt(r.learner?.trained_steps)}},
         {{label: 'Ultimo batch', render: r => fmt(r.learner?.last_batch_size)}},
         {{label: 'Step', render: r => fmt(r.learner?.global_step)}},
@@ -2183,25 +2195,38 @@ def render_overview_dashboard(data: dict[str, Any]) -> str:
       barChart('cycleChart', rowsForRun(DATA.logs.cycles));
       const performanceCycles = rowsForRun(DATA.logs.cycles).map((cycle, index, cycles) => {{
         const previous = cycles[index - 1];
-        const duration_seconds = previous && previous.run_id === cycle.run_id
+        const historical_duration_seconds = previous && previous.run_id === cycle.run_id
           ? (new Date(cycle.created_at) - new Date(previous.created_at)) / 1000
           : null;
+        const generation_seconds = Number(cycle.cycle?.generation_wall_seconds) || historical_duration_seconds;
+        const training_seconds = Number(cycle.learner?.training_wall_seconds) || null;
         const saved = Number(cycle.cycle?.saved_samples || 0);
         const mcts = Number(cycle.cycle?.used_mcts_jobs || 0);
         const reweighted = Number(cycle.cycle?.reweighted_jobs || 0);
         const total = mcts + reweighted;
         return {{
           ...cycle,
-          duration_seconds,
-          duration_minutes: duration_seconds > 0 ? duration_seconds / 60 : null,
-          samples_per_second: duration_seconds > 0 ? saved / duration_seconds : null,
+          generation_minutes: generation_seconds > 0 ? generation_seconds / 60 : null,
+          training_minutes: training_seconds > 0 ? training_seconds / 60 : null,
+          mcts_accumulated_minutes: Number(cycle.cycle?.mcts_generation_total_seconds || 0) / 60,
+          zarr_read_accumulated_minutes: Number(cycle.cycle?.zarr_read_total_seconds || 0) / 60,
+          zarr_write_minutes: Number(cycle.cycle?.zarr_write_total_seconds || 0) / 60,
+          samples_per_second: Number(cycle.cycle?.samples_per_generation_second)
+            || (generation_seconds > 0 ? saved / generation_seconds : null),
           mcts_percent: total ? mcts / total * 100 : null,
           reweighted_percent: total ? reweighted / total * 100 : null,
         }};
       }});
       lineChart('throughputChart', performanceCycles, [
         {{key: 'samples_per_second', label: 'samples/s', color: '#116a5b'}},
-        {{key: 'duration_minutes', label: 'duracion min', color: '#b54708'}},
+        {{key: 'generation_minutes', label: 'generacion min', color: '#b54708'}},
+      ]);
+      lineChart('timingChart', performanceCycles, [
+        {{key: 'generation_minutes', label: 'generacion pared', color: '#116a5b'}},
+        {{key: 'training_minutes', label: 'entrenamiento', color: '#b54708'}},
+        {{key: 'mcts_accumulated_minutes', label: 'MCTS acumulado', color: '#344054'}},
+        {{key: 'zarr_read_accumulated_minutes', label: 'Zarr read acum.', color: '#667085'}},
+        {{key: 'zarr_write_minutes', label: 'Zarr write', color: '#7f56d9'}},
       ]);
       lineChart('jobMixChart', performanceCycles, [
         {{key: 'mcts_percent', label: 'MCTS %', color: '#116a5b', format: 'percent'}},

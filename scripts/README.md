@@ -363,6 +363,19 @@ consume en batches sin reposicion. Los steps se calculan como
 `ceil(samples_del_ciclo / learner_batch_size)`. Tras guardar el checkpoint y
 recargar el evaluator, ese rango queda marcado como entrenado y no se reutiliza.
 
+Cada ciclo registra tiempos de generacion y entrenamiento en
+`mcts_generation_cycles.jsonl` y los muestra en el dashboard:
+
+- `generation_wall_seconds`: tiempo real transcurrido desde que comienza el
+  ciclo hasta que sus samples quedan guardados.
+- `mcts_generation_total_seconds` y `zarr_read_total_seconds`: suma de los
+  tiempos medidos dentro de los workers. Con varios workers pueden superar el
+  tiempo real del ciclo porque las tareas corren en paralelo.
+- `zarr_write_total_seconds`: tiempo empleado por el proceso orquestador para
+  agregar samples al buffer.
+- El bloque `learner` separa tiempo total, lectura Zarr, encoding, optimizacion
+  y guardado de checkpoints, ademas de samples por segundo.
+
 Para concentrar las semillas MCTS en una ventana anterior al terminal:
 
 ```bash

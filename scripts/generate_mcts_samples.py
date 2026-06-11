@@ -470,7 +470,13 @@ def main() -> None:
             f"last_batch_size={learner_report.last_batch_size} "
             f"loss={last_metrics.loss:.6f} "
             f"policy_loss={last_metrics.policy_loss:.6f} "
-            f"value_loss={last_metrics.value_loss:.6f}",
+            f"value_loss={last_metrics.value_loss:.6f} "
+            f"training_seconds={learner_report.training_wall_seconds:.2f} "
+            f"zarr_read_seconds={learner_report.zarr_read_total_seconds:.2f} "
+            f"encoding_seconds={learner_report.encoding_total_seconds:.2f} "
+            f"optimization_seconds={learner_report.optimization_total_seconds:.2f} "
+            f"checkpoint_seconds={learner_report.checkpoint_save_total_seconds:.2f} "
+            f"samples_per_second={learner_report.samples_per_training_second:.2f}",
             flush=True,
         )
         return current_checkpoint_path
@@ -642,6 +648,24 @@ class MCTSGenerationRunLogger:
             "sample_start_index": int(learner_report.sample_start_index),
             "sample_end_index": int(learner_report.sample_end_index),
             "last_batch_size": int(learner_report.last_batch_size),
+            "training_wall_seconds": float(
+                learner_report.training_wall_seconds
+            ),
+            "zarr_read_total_seconds": float(
+                learner_report.zarr_read_total_seconds
+            ),
+            "encoding_total_seconds": float(
+                learner_report.encoding_total_seconds
+            ),
+            "optimization_total_seconds": float(
+                learner_report.optimization_total_seconds
+            ),
+            "checkpoint_save_total_seconds": float(
+                learner_report.checkpoint_save_total_seconds
+            ),
+            "samples_per_training_second": float(
+                learner_report.samples_per_training_second
+            ),
             "last_metric": asdict(last_metric) if last_metric is not None else None,
         }
 

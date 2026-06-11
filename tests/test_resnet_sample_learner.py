@@ -80,6 +80,12 @@ def test_resnet_sample_learner_trains_and_saves_checkpoint(
     assert len(report.metrics) == 2
     assert sorted(_FakeSampleBuffer.loaded_indices) == [0, 1, 2, 3]
     assert Path(report.checkpoint_path).exists()
+    assert report.training_wall_seconds > 0.0
+    assert report.zarr_read_total_seconds >= 0.0
+    assert report.encoding_total_seconds >= 0.0
+    assert report.optimization_total_seconds > 0.0
+    assert report.checkpoint_save_total_seconds > 0.0
+    assert report.samples_per_training_second > 0.0
 
     checkpoint = torch.load(report.checkpoint_path, map_location="cpu")
     assert checkpoint["training_state"]["global_step"] == 2

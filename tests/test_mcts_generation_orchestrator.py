@@ -24,6 +24,40 @@ class _DummyEvaluator:
         self.reloaded_checkpoint = checkpoint_path
 
 
+def test_cycle_stats_aggregate_worker_timings() -> None:
+    from modules.mcts_generation.orchestrator import _CycleStats
+
+    stats = _CycleStats(cycle_index=2, sample_start_index=100)
+    stats.completed_jobs = 2
+    stats.saved_samples = 50
+    stats.used_mcts_jobs = 1
+    stats.reweighted_jobs = 1
+    stats.zarr_write_total_seconds = 0.4
+    stats.add_worker_timings(
+        {
+            "used_mcts": True,
+            "zarr_read_seconds": 0.2,
+            "mcts_generation_seconds": 3.0,
+        }
+    )
+    stats.add_worker_timings(
+        {
+            "used_mcts": False,
+            "zarr_read_seconds": 0.4,
+            "mcts_generation_seconds": 0.0,
+        }
+    )
+
+    report = stats.to_report(sample_end_index=150)
+
+    assert np.isclose(report.zarr_read_total_seconds, 0.6)
+    assert np.isclose(report.zarr_read_mean_seconds, 0.3)
+    assert report.mcts_generation_total_seconds == 3.0
+    assert report.mcts_generation_mean_seconds == 3.0
+    assert report.zarr_write_total_seconds == 0.4
+    assert report.samples_per_generation_second > 0.0
+
+
 def test_orchestrator_writes_reweighted_samples(monkeypatch, tmp_path) -> None:
     from modules.mcts_generation import worker as worker_module
 
@@ -92,6 +126,11 @@ def test_orchestrator_writes_reweighted_samples(monkeypatch, tmp_path) -> None:
     assert report.failed_jobs == 0
     assert report.saved_samples == 1
     assert report.reweighted_jobs == 1
+    cycle = report.cycle_reports[0]
+    assert cycle.generation_wall_seconds >= 0.0
+    assert cycle.zarr_read_total_seconds >= 0.0
+    assert cycle.zarr_write_total_seconds >= 0.0
+    assert cycle.samples_per_generation_second >= 0.0
 
 
 def test_orchestrator_marks_completed_cycle_as_trained(monkeypatch, tmp_path) -> None:

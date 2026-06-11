@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Iterable
 
+import numpy as np
+
 from modules.evaluators.centralized import (
     CentralizedEvaluatorClient,
     CentralizedEvaluatorConfig,
@@ -55,6 +57,15 @@ class MCTSCycleReport:
     reweighted_jobs: int
     sample_start_index: int = 0
     sample_end_index: int = 0
+    generation_wall_seconds: float = 0.0
+    zarr_read_total_seconds: float = 0.0
+    zarr_read_mean_seconds: float = 0.0
+    zarr_read_p95_seconds: float = 0.0
+    mcts_generation_total_seconds: float = 0.0
+    mcts_generation_mean_seconds: float = 0.0
+    mcts_generation_p95_seconds: float = 0.0
+    zarr_write_total_seconds: float = 0.0
+    samples_per_generation_second: float = 0.0
 
 
 @dataclass
@@ -163,9 +174,14 @@ class MCTSGenerationOrchestrator:
                     reweighted_jobs += 1
                     cycle_stats.reweighted_jobs += 1
 
+                write_started_at = time.perf_counter()
                 appended = sample_buffer.append_trajectories(result.trajectories)
+                cycle_stats.zarr_write_total_seconds += (
+                    time.perf_counter() - write_started_at
+                )
                 saved_samples += appended
                 cycle_stats.saved_samples += appended
+                cycle_stats.add_worker_timings(result.metadata)
             except Exception as exc:
                 failed_jobs += 1
                 cycle_stats.failed_jobs += 1
@@ -355,9 +371,14 @@ class MCTSGenerationOrchestrator:
                 else:
                     reweighted_jobs += 1
                     cycle_stats.reweighted_jobs += 1
+                write_started_at = time.perf_counter()
                 appended = sample_buffer.append_trajectories(message.trajectories)
+                cycle_stats.zarr_write_total_seconds += (
+                    time.perf_counter() - write_started_at
+                )
                 saved_samples += appended
                 cycle_stats.saved_samples += appended
+                cycle_stats.add_worker_timings(message.metadata)
 
             if self._cycle_limit_reached(cycle_stats):
                 if in_flight_jobs == 0:
@@ -554,12 +575,26 @@ class _CycleStats:
     generated_trajectories: int = 0
     used_mcts_jobs: int = 0
     reweighted_jobs: int = 0
+    started_at: float = field(default_factory=time.perf_counter)
+    zarr_read_seconds: list[float] = field(default_factory=list)
+    mcts_generation_seconds: list[float] = field(default_factory=list)
+    zarr_write_total_seconds: float = 0.0
 
     @property
     def has_activity(self) -> bool:
         return self.completed_jobs > 0 or self.failed_jobs > 0
 
+    def add_worker_timings(self, metadata: dict) -> None:
+        self.zarr_read_seconds.append(
+            float(metadata.get("zarr_read_seconds", 0.0))
+        )
+        if bool(metadata.get("used_mcts")):
+            self.mcts_generation_seconds.append(
+                float(metadata.get("mcts_generation_seconds", 0.0))
+            )
+
     def to_report(self, sample_end_index: int) -> MCTSCycleReport:
+        generation_wall_seconds = time.perf_counter() - self.started_at
         return MCTSCycleReport(
             cycle_index=self.cycle_index,
             completed_jobs=self.completed_jobs,
@@ -570,7 +605,38 @@ class _CycleStats:
             reweighted_jobs=self.reweighted_jobs,
             sample_start_index=self.sample_start_index,
             sample_end_index=int(sample_end_index),
+            generation_wall_seconds=float(generation_wall_seconds),
+            zarr_read_total_seconds=float(sum(self.zarr_read_seconds)),
+            zarr_read_mean_seconds=_safe_mean(self.zarr_read_seconds),
+            zarr_read_p95_seconds=_safe_percentile(
+                self.zarr_read_seconds,
+                95,
+            ),
+            mcts_generation_total_seconds=float(
+                sum(self.mcts_generation_seconds)
+            ),
+            mcts_generation_mean_seconds=_safe_mean(
+                self.mcts_generation_seconds
+            ),
+            mcts_generation_p95_seconds=_safe_percentile(
+                self.mcts_generation_seconds,
+                95,
+            ),
+            zarr_write_total_seconds=float(self.zarr_write_total_seconds),
+            samples_per_generation_second=(
+                float(self.saved_samples / generation_wall_seconds)
+                if generation_wall_seconds > 0
+                else 0.0
+            ),
         )
+
+
+def _safe_mean(values: list[float]) -> float:
+    return float(np.mean(values)) if values else 0.0
+
+
+def _safe_percentile(values: list[float], percentile: float) -> float:
+    return float(np.percentile(values, percentile)) if values else 0.0
 
 
 def _run_evaluator_server_process(

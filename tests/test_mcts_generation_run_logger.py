@@ -60,6 +60,12 @@ def test_mcts_generation_run_logger_writes_jsonl(tmp_path) -> None:
         sample_start_index=0,
         sample_end_index=350,
         last_batch_size=350,
+        training_wall_seconds=2.0,
+        zarr_read_total_seconds=0.2,
+        encoding_total_seconds=0.3,
+        optimization_total_seconds=1.2,
+        checkpoint_save_total_seconds=0.3,
+        samples_per_training_second=175.0,
         metrics=[
             ResNetTrainStepMetrics(
                 step=1,
@@ -108,6 +114,8 @@ def test_mcts_generation_run_logger_writes_jsonl(tmp_path) -> None:
     assert cycle_lines[0]["cycle"]["sample_end_index"] == 350
     assert cycle_lines[0]["learner"]["checkpoint_path"].endswith("000001.pt")
     assert cycle_lines[0]["learner"]["last_metric"]["loss"] == 1.0
+    assert cycle_lines[0]["learner"]["training_wall_seconds"] == 2.0
+    assert cycle_lines[0]["learner"]["samples_per_training_second"] == 175.0
 
     assert learner_lines[0]["run_id"] == "run_test"
     assert learner_lines[0]["cycle_id"] == "run_test_cycle_000"

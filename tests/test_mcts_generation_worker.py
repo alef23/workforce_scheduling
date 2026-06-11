@@ -188,3 +188,6 @@ def test_worker_generates_mcts_trajectory(monkeypatch) -> None:
     assert sample["metadata"]["sample_source"] == "mcts"
     assert sample["metadata"]["source_step_index"] == 0
     assert sample["value"] == 0.75
+    assert result.metadata["zarr_read_seconds"] >= 0.0
+    assert result.metadata["mcts_generation_seconds"] >= 0.0
+    assert result.metadata["job_total_seconds"] >= 0.0
