@@ -4,6 +4,11 @@ from .trajectory_replayer import (
     build_uniform_policy_from_legal_actions,
     replay_actions_as_trajectory,
 )
+from .compound_trajectory_replayer import CompoundTrajectoryReplayer
+from .compound_stock_adjuster import (
+    CompoundStockAdjuster,
+    CompoundStockAdjustmentResult,
+)
 from .trajectory_augmentation import (
     split_actions_into_resource_chunks,
     flatten_action_chunks,

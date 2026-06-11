@@ -5,6 +5,8 @@ Este modulo genera escenarios de demanda para entrenar y validar el planificador
 La responsabilidad esta separada en dos piezas:
 
 - `DemandSimulator`: genera una cobertura factible y una trayectoria positiva.
+- `CompoundDemandSimulator`: variante experimental que genera directamente
+  acciones semanales compuestas.
 - `DemandNoiseGenerator`: toma esa cobertura y genera demanda inicial con descuento/ruido.
 
 El modulo no guarda datos. La persistencia corresponde a `modules.storage`.
@@ -57,6 +59,42 @@ coverage_matrix, trajectory = simulator.compute_coverage(
 
 La `policy` es uniforme sobre las acciones legales del estado. Las acciones ilegales tienen probabilidad `0`.
 
+## CompoundDemandSimulator
+
+La variante compuesta utiliza el dominio fijo:
+
+```text
+modalidades: 4, 6 y 8
+horarios: 6, 12 y 18
+cierre: 22
+franco fijo: día 6
+un franco móvil: días 0 a 5
+stock total máximo: 20
+```
+
+Cada acción aplica una semana completa y la policy tiene shape `(54,)`.
+Cada recurso genera exactamente cuatro acciones:
+
+```python
+from modules.demand_simulator import CompoundDemandSimulator
+
+simulator = CompoundDemandSimulator(problem_setup=setup, seed=42)
+coverage_matrix, trajectory = simulator.compute_coverage(
+    n_resources=20,
+)
+```
+
+El simulador samplea directamente `action_id` legales por cierre:
+
+- la primera acción de cada recurso se elige entre las 42 acciones posibles;
+- esa acción determina la modalidad;
+- las siguientes tres acciones se eligen dentro del bloque de esa modalidad.
+
+La distribución de stock por modalidad surge de esas primeras acciones. Luego
+se reconstruyen los snapshots con `CompoundWorkforceState`; cada acción
+semanal modifica la demanda residual. El simulador no consulta ni ejecuta el
+engine durante la generación.
+
 ## DemandNoiseGenerator
 
 Uso basico:
@@ -93,6 +131,42 @@ Garantias:
 - `discount_matrix >= 0`
 - `discount_matrix <= coverage_matrix`
 - `initial_demand = coverage_matrix - discount_matrix`
+
+La trayectoria compuesta se corrige después del ruido mediante:
+
+```python
+from modules.trajectory_generation import CompoundTrajectoryReplayer
+from modules.workforce_engine.compound_engine import CompoundWorkforceEngine
+
+replayer = CompoundTrajectoryReplayer(
+    CompoundWorkforceEngine(setup)
+)
+result = replayer.replay_trajectory(
+    initial_demand=noise_result.initial_demand,
+    source_trajectory=trajectory,
+)
+```
+
+El replayer se detiene cuando el engine declara terminalidad, aunque todavía
+queden acciones base. Luego retropropaga el reward terminal a todos los
+samples generados.
+
+La reducción posterior de stock trabaja con recursos completos:
+
+```python
+from modules.trajectory_generation import CompoundStockAdjuster
+
+result = CompoundStockAdjuster(
+    engine=CompoundWorkforceEngine(setup),
+    p_stock=0.2,
+).adjust(result["trajectory"])
+```
+
+Cada recurso es un chunk de cuatro acciones consecutivas. Cuando se activa la
+reducción, se samplea una lista de chunks que estarán incluidos en el stock;
+esos chunks se ubican primero y los restantes se reproducen en
+`expansion_mode`. El ajustador llama internamente a
+`CompoundTrajectoryReplayer`.
 
 ## Relacion con otros modulos
 

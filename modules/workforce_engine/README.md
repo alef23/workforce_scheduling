@@ -8,10 +8,68 @@ El engine no decide cuál es la mejor acción. Recibe un `WorkforceState`, recib
 
 ```text
 modules/workforce_engine/
+├── compound_actions.py
+├── compound_engine.py
+├── compound_schemas.py
 ├── engine.py
 ├── schemas.py
 ├── workforce_example.ipynb
 └── README.md
+```
+
+Los archivos `compound_*` contienen una variante experimental independiente.
+El engine original permanece sin cambios.
+
+## Engine de acciones compuestas
+
+`CompoundWorkforceEngine` restringe el dominio a:
+
+```text
+modalidades: [4, 6, 8]
+horarios: [6, 12, 18]
+franco fijo: 6
+un franco móvil: 0..5
+cierre: 22
+```
+
+Cada acción aplica una cobertura semanal completa y el espacio global contiene
+54 IDs. La restricción de cierre reduce la cantidad máxima de acciones legales
+a 42 al iniciar un recurso. Durante las semanas restantes, la modalidad queda
+fijada.
+
+El engine conserva el contrato requerido por el MCTS actual:
+
+```python
+action_space_size
+step(state, action_id)
+legal_mask(state, priors)
+check_terminality(state)
+compute_reward(state)
+```
+
+Ejemplo:
+
+```python
+from modules.workforce_engine.compound_actions import encode_action
+from modules.workforce_engine.compound_engine import CompoundWorkforceEngine
+from modules.workforce_engine.compound_schemas import CompoundWorkforceState
+
+engine = CompoundWorkforceEngine(setup)
+state = CompoundWorkforceState(
+    residual_demand=residual_demand,
+    remaining_stock=remaining_stock,
+    expansion_mode=False,
+    current_modality=None,
+    assignment_week=0,
+    initial_demand_total=initial_demand_total,
+)
+
+action_id = encode_action(
+    modality_index=0,
+    entry_hour_index=1,
+    mobile_day_off=3,
+)
+result = engine.step(state, action_id)
 ```
 
 ## Conceptos principales

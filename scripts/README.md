@@ -36,6 +36,74 @@ exclusivamente el analisis interactivo del test parcial:
 La evaluacion desde el estado inicial se representa como un caso particular del
 test parcial usando un `tail` suficientemente grande.
 
+## `generate_compound_dataset.py`
+
+Genera directamente el dataset del dominio de acciones compuestas. Cada worker
+ejecuta en memoria:
+
+```text
+CompoundDemandSimulator
+-> DemandNoiseGenerator
+-> CompoundTrajectoryReplayer
+-> CompoundStockAdjuster
+```
+
+El proceso principal guarda únicamente las trayectorias finales en:
+
+```text
+datasets/compound/trajectories.zarr
+```
+
+Comando mínimo:
+
+```bash
+uv run python scripts/generate_compound_dataset.py 100
+```
+
+Comando recomendado para una prueba:
+
+```bash
+uv run python scripts/generate_compound_dataset.py 100 \
+  --workers 4 \
+  --n-resources 20 \
+  --p-stock 0.2 \
+  --overwrite \
+  --progress-interval 10
+```
+
+`--n-resources` es un máximo. Con `--n-resources 20`, cada trayectoria samplea
+uniformemente una cantidad entera de recursos en `[1, 20]`.
+
+Defaults:
+
+| Parámetro | Default |
+|---|---:|
+| `n_samples` | requerido |
+| `--workers` | `4` |
+| `--n-resources` | `20` (máximo; sample uniforme desde `1`) |
+| `--p-stock` | `0.2` |
+| `--output-path` | `datasets/compound/trajectories.zarr` |
+| `--progress-interval` | `100` |
+| `--temporal-chunk-size` | `128` |
+| `--noise-k-max` | `0.8` |
+| `--noise-k-lambda` | `10.0` |
+| `--max-overcoverage-tolerance` | `0.1` |
+| `--run-prefix` | `compound` |
+| `--multiprocessing-start-method` | `spawn` |
+| `--overwrite` | desactivado |
+
+El setup estructural permanece fijo:
+
+```text
+allowed_entry_hours = [6, 12, 18]
+closing_hour = 22
+fixed_day_off = 6
+mobile_days_off_count = 1
+```
+
+No se expone una seed: cada job utiliza aleatoriedad nueva del sistema. Sin
+`--overwrite`, una nueva corrida agrega trayectorias con IDs únicos al buffer.
+
 ## `generate_raw_demand_dataset.py`
 
 Genera trayectorias raw resueltas usando `RawDemandTrajectoryWorker` y las guarda

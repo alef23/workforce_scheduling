@@ -183,3 +183,62 @@ DatasetGenerationConfig(
     print_progress=False,
 )
 ```
+
+## Pipeline de acciones compuestas
+
+`CompoundFullTrajectoryWorker` ejecuta el circuito completo dentro de un mismo
+proceso:
+
+```text
+generar cobertura y trayectoria base
+-> aplicar ruido a la cobertura
+-> reproducir acciones con CompoundWorkforceEngine
+-> ajustar stock por chunks de recurso
+-> devolver únicamente la trayectoria final
+```
+
+`CompoundDatasetOrchestrator` distribuye jobs entre procesos y es el único que
+escribe en `CompoundTrajectoryBuffer`. Esto evita escrituras concurrentes sobre
+Zarr. Cada worker usa entropía del sistema; no recibe una seed de producción.
+
+```python
+from modules.dataset_generation import (
+    CompoundDatasetOrchestrator,
+    CompoundFullTrajectoryWorker,
+    CompoundOrchestratorConfig,
+    NoiseGenerationConfig,
+    build_compound_generation_jobs,
+)
+from modules.workforce_engine.schemas import ProblemSetup
+
+setup = ProblemSetup(
+    mobile_days_off_count=1,
+    fixed_day_off=6,
+    allowed_entry_hours=[6, 12, 18],
+    max_overcoverage_tolerance=0.1,
+    closing_hour=22,
+)
+worker = CompoundFullTrajectoryWorker(
+    problem_setup=setup,
+    n_resources=20,
+    p_stock=0.2,
+    noise_config=NoiseGenerationConfig(k_max=0.8),
+)
+orchestrator = CompoundDatasetOrchestrator(
+    config=CompoundOrchestratorConfig(
+        output_path="datasets/compound/trajectories.zarr",
+        n_workers=4,
+        overwrite=True,
+    ),
+    worker=worker,
+)
+report = orchestrator.run(build_compound_generation_jobs(1000))
+```
+
+`n_resources` define el máximo por job. Cada worker samplea uniformemente una
+cantidad entera entre `1` y ese máximo. La metadata guarda `n_resources` como
+cantidad efectiva y `max_n_resources` como límite configurado.
+
+El método de inicio multiproceso predeterminado es `spawn`, para no heredar
+recursos internos de Zarr ni contextos de GPU. El reporte incluye rewards,
+longitud de trayectoria, demanda inicial y cantidad de recursos de salida.

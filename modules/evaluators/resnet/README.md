@@ -7,6 +7,8 @@ Este módulo separa tres responsabilidades:
 - `StateEncoder`: transforma `ProblemSetup + WorkforceState` en un tensor.
 - `WorkforceResNet`: red neuronal pura que recibe tensores y devuelve policy/value.
 - `ResNetStateEvaluator`: wrapper compatible con la interfaz común de evaluadores.
+- `CompoundActionStateEncoder` y `CompoundResNetEvaluator`: variante
+  experimental para el espacio de 54 acciones semanales compuestas.
 
 ## Archivos
 
@@ -179,3 +181,36 @@ El checkpoint actual sigue esta estructura:
 ```
 
 `ResNetStateEvaluator` usa `model_config` para reconstruir la arquitectura y luego carga `model_state_dict`.
+
+## Evaluador experimental de acciones compuestas
+
+`CompoundResNetEvaluator` trabaja con `CompoundWorkforceState`, el encoder de
+11 canales y una policy de 54 acciones:
+
+```python
+from modules.evaluators.resnet.compound_evaluator import CompoundResNetEvaluator
+
+evaluator = CompoundResNetEvaluator(
+    checkpoint_path=(
+        "modules/evaluators/resnet/checkpoints_compound_actions/"
+        "workforce_resnet_compound_000000.pt"
+    ),
+    device="auto",
+)
+
+policy, value = evaluator.predict(state)
+policies, values = evaluator.predict_batch(states)
+```
+
+Si no se indica un checkpoint, selecciona el mayor número de checkpoint dentro
+de `checkpoints_compound_actions/`. `reload_weights()` permite actualizar los
+pesos sin reconstruir el evaluador:
+
+```python
+global_step = evaluator.reload_weights(next_checkpoint_path)
+```
+
+El wrapper valida que el checkpoint tenga `input_channels=11` y
+`action_space_size=54`. Devuelve probabilidades para todo el espacio de
+acciones; `CompoundWorkforceEngine.legal_mask()` filtra las ilegales y
+renormaliza la policy. El `value` no se modifica.

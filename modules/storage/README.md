@@ -6,8 +6,43 @@ Este módulo separa dos responsabilidades:
 
 - `TrajectoryBuffer`: guarda y carga trayectorias completas e identificables.
 - `SampleBuffer`: guarda y carga samples aplanados en batches para entrenamiento.
+- `CompoundTrajectoryBuffer`: guarda trayectorias del dominio compuesto.
 
 El encoding para redes neuronales no vive en este módulo. La conversión a tensores y one-hot/multi-hot es responsabilidad de `StateEncoder`.
+
+## CompoundTrajectoryBuffer
+
+Persiste el resultado final del circuito compuesto en un único buffer:
+
+```text
+CompoundDemandSimulator
+-> DemandNoiseGenerator
+-> CompoundTrajectoryReplayer
+-> CompoundStockAdjuster
+-> CompoundTrajectoryBuffer
+```
+
+Cada sample conserva el estado compuesto crudo, una policy de 54 posiciones,
+`action_id` y reward. También se guarda el `ProblemSetup` fijo y metadata para
+trazabilidad, como stock original, stock de salida y parámetros de ruido.
+
+```python
+from modules.storage import CompoundTrajectoryBuffer
+
+buffer = CompoundTrajectoryBuffer(
+    "datasets/compound/trajectories.zarr",
+    mode="a",
+)
+buffer.save(
+    trajectory=trajectory,
+    problem_setup=problem_setup,
+    trajectory_id=trajectory_id,
+    metadata=metadata,
+)
+```
+
+No se guardan buffers intermedios de raw, noise o stock. El encoding neuronal
+continúa fuera de storage.
 
 ## TrajectoryBuffer
 
